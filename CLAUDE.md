@@ -8,6 +8,19 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 See `docs/PRD.md` for complete product specification and `AGENTS.md` for framework warnings.
 
+## Language Rules
+- Code, variable names, function names, and file names: English
+- Code comments: English
+- Commit messages: English
+- All UI-facing text (buttons, labels, messages, page copy, etc.): English
+  - Note: Korean ticketing-culture terms (e.g. "포도알") should be translated
+    to their functional English equivalent (e.g. "available seat") rather than
+    kept in Korean or transliterated.
+- Exception: existing Korean-language documents (PRD.md, ROADMAP.md, CLAUDE.md,
+  and already-completed files in /tasks) stay as-is — do not translate or
+  modify them.
+- Conversation with the user continues in Korean.
+
 ## Tech Stack & Key Constraints
 
 ### Critical: Next.js 16 Breaking Changes
@@ -158,21 +171,18 @@ Booking ──→ Session
 - Avoid mocking database transactions (mocked locks hide race conditions)
 
 ## Documentation References
-
 - **PRD**: `docs/PRD.md` (complete feature spec, user flow, data model)
 - **PRD Validation Report**: Embedded in PRD comments; indicates critical items (tick engine, schema fixes)
 - **Next.js Docs**: `node_modules/next/dist/docs/` (especially `01-app/01-getting-started/15-route-handlers.md`)
 - **Framework Warnings**: `AGENTS.md`
 
 ## Before First Commit
-
 1. **Schema initialization**: Create `schema.prisma` with validated model (fix critical issues above)
 2. **Env setup**: Add `.env.local` with `DATABASE_URL` (Neon pooled), `.env.example` for reference
 3. **Simulation engine skeleton**: Stub `lib/simulation.ts` with tick-on-request pattern
 4. **API route structure**: Create empty route handlers for planning
 
 ## Common Pitfalls
-
 - ❌ Assuming Next.js 14/15 patterns work in 16 — check `node_modules/next/dist/docs/` first
 - ❌ Splitting `Seat.status` update from `Hold` write into separate transactions — will cause state divergence under concurrent access
 - ❌ Implementing bot as `setInterval` — serverless functions don't persist between requests
@@ -180,7 +190,6 @@ Booking ──→ Session
 - ❌ Mocking database in tests — won't catch real locking bugs
 
 ## Quick Start for New Features
-
 1. **Read**: `docs/PRD.md` section for the feature
 2. **Check**: Next.js docs in `node_modules/` for API (not npm/online docs)
 3. **Sketch**: Route handler signature + request/response types

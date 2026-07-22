@@ -66,7 +66,7 @@
 >
 > **착수 조건:** 사전 결정 사항 D-1, D-2 확정
 
-- **Task 001: 프로젝트 구조 · 라우팅 · 테스트 환경 설정** - 우선순위
+- **Task 001: 프로젝트 구조 · 라우팅 · 테스트 환경 설정** ✅ - 완료 (See: `/tasks/001-project-skeleton.md`)
   - Next.js 16 App Router 기반 전체 라우트 구조 생성 (`app/page.tsx` 홈, `queue/`, `seats/`, `booking/`, `payment/`, `result/`)
   - 모든 주요 페이지의 빈 껍데기 파일 생성 (선형 진행 플로우: 홈 → 대기열 → 좌석 → 예매정보 → 결제 → 결과)
   - API 라우트 구조 빈 핸들러 생성 (`api/session/`, `api/queue/`, `api/seats/`, `api/booking/`, `api/payment/`)
