@@ -90,7 +90,7 @@
   - Prisma client 싱글톤 (`lib/db.ts`) 구현
   - 초기 마이그레이션 실행 + seed 스크립트 (가상 콘서트 1개 + 200석 배치 템플릿 + 소/중/메가 `SimulationConfig` 3티어)
 
-- **Task 003: 타입 정의 및 시뮬레이션 엔진 스켈레톤**
+- **Task 003: 타입 정의 및 시뮬레이션 엔진 스켈레톤** ✅ - 완료 (See: `/tasks/003-types-simulation-skeleton.md`)
   - `lib/types.ts`에 공유 타입 정의 (Tier enum, SeatStatus, QueueStatus, API 요청/응답 타입, 결과 outcome/event 타입, 판단 이벤트 타입 — Task 008~010 기록용 이벤트 스키마 사전 확정)
   - `lib/simulation.ts` **tick-on-request 패턴 스켈레톤** stub 구현:
     - 매 요청마다 `now - lastTickAt` 경과 시간만큼 시뮬레이션 전진 (`lastTickAt`은 DB에서 읽고 갱신)
