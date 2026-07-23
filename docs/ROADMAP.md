@@ -74,7 +74,7 @@
   - **Vitest 셋업** (CLAUDE.md 권장 사항 반영): 설정 파일, 테스트 DB 연결 헬퍼, `npm run test` 스크립트 — Task 006부터 단위 테스트가 필요하므로 골격 단계에서 준비
   - Next.js 16 route handler 시그니처를 `node_modules/next/dist/docs/`에서 확인 후 적용
 
-- **Task 002: DB 스키마 · Prisma · 환경 설정** - 우선순위
+- **Task 002: DB 스키마 · Prisma · 환경 설정** ✅ - 완료 (See: `/tasks/002-db-schema-prisma.md` — 실제 Neon 연결은 미검증, 로컬 Postgres 드라이런으로 마이그레이션/제약 검증)
   - **관련 데이터 모델:** Concert, Seat, Hold, Booking, QueueEntry, SimulationConfig, SessionResult (+ 시뮬레이션 인스턴스 상태)
   - `schema.prisma` 작성 (PostgreSQL + `@prisma/adapter-neon` serverless 어댑터)
   - **크리티컬 스키마 제약 반영 (CLAUDE.md 검증 항목):**

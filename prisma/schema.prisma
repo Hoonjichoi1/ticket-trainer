@@ -1,0 +1,172 @@
+generator client {
+  provider        = "prisma-client"
+  output          = "../lib/generated/prisma"
+  previewFeatures = ["partialIndexes"]
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+enum SeatStatus {
+  AVAILABLE
+  HELD
+  SOLD
+}
+
+enum QueueEntryStatus {
+  WAITING
+  ADMITTED
+  EXPIRED
+}
+
+enum Tier {
+  SMALL
+  MEDIUM
+  MEGA
+}
+
+enum SessionOutcome {
+  SUCCESS
+  QUEUE_TIMEOUT
+  SEAT_LOST
+  PAYMENT_FAILED
+  ABANDONED
+}
+
+enum SimulationRunStatus {
+  ACTIVE
+  COMPLETED
+  EXPIRED
+}
+
+model Concert {
+  id     String   @id @default(uuid())
+  title  String
+  openAt DateTime
+  venue  String
+
+  seats          Seat[]
+  bookings       Booking[]
+  queueEntries   QueueEntry[]
+  simulationRuns SimulationRun[]
+}
+
+// Each session gets its own independent simulation instance (D-1): its own
+// seat map and queue, not a globally shared one. Resolves "재도전" (retry)
+// by starting a fresh run. lastTickAt is persisted here (not in memory)
+// since the tick engine runs as tick-on-request in serverless route
+// handlers with no persistent process between requests.
+model SimulationRun {
+  id         String              @id @default(uuid())
+  concertId  String
+  sessionId  String
+  tier       Tier
+  status     SimulationRunStatus @default(ACTIVE)
+  lastTickAt DateTime            @default(now())
+  createdAt  DateTime            @default(now())
+
+  concert      Concert      @relation(fields: [concertId], references: [id])
+  seats        Seat[]
+  queueEntries QueueEntry[]
+
+  @@index([sessionId])
+  @@index([concertId])
+}
+
+model Seat {
+  id              String     @id @default(uuid())
+  concertId       String
+  simulationRunId String
+  row             String
+  number          Int
+  status          SeatStatus @default(AVAILABLE)
+
+  concert       Concert       @relation(fields: [concertId], references: [id])
+  simulationRun SimulationRun @relation(fields: [simulationRunId], references: [id])
+  holds         Hold[]
+  booking       Booking?
+
+  @@index([concertId])
+  @@index([simulationRunId])
+}
+
+// Hold uniqueness: the task spec's literal wording
+// (`UNIQUE(seatId) WHERE expiresAt > now()`) cannot be created in
+// PostgreSQL — partial index predicates must be IMMUTABLE, and now() is
+// STABLE. releasedAt (nullable) replaces the time comparison: a hold is
+// "active" iff releasedAt IS NULL. releasedAt is set (in the same
+// transaction as the Seat.status flip back to AVAILABLE) when a hold is
+// explicitly released, converted to a Booking, or lazily expired by the
+// tick engine finding expiresAt < now(). expiresAt still drives the actual
+// TTL/lazy-expiry logic in application code. A seat can accumulate many
+// Hold rows over time (held, released, held again) — only one may be
+// active (releasedAt IS NULL) at a time, enforced by the partial unique
+// index below.
+model Hold {
+  id         String    @id @default(uuid())
+  seatId     String
+  sessionId  String
+  expiresAt  DateTime
+  releasedAt DateTime?
+  createdAt  DateTime  @default(now())
+
+  seat Seat @relation(fields: [seatId], references: [id])
+
+  @@unique([seatId], where: raw("\"releasedAt\" IS NULL"), map: "hold_seat_active_unique")
+  @@index([expiresAt])
+  @@index([seatId, expiresAt])
+}
+
+model Booking {
+  id          String   @id @default(uuid())
+  concertId   String
+  seatId      String   @unique
+  sessionId   String
+  confirmedAt DateTime @default(now())
+
+  concert Concert @relation(fields: [concertId], references: [id])
+  seat    Seat    @relation(fields: [seatId], references: [id])
+
+  @@index([concertId])
+  @@index([sessionId])
+}
+
+model QueueEntry {
+  id              String           @id @default(uuid())
+  concertId       String
+  simulationRunId String
+  sessionId       String
+  position        Int
+  joinedAt        DateTime         @default(now())
+  admissionToken  String?
+  status          QueueEntryStatus @default(WAITING)
+
+  concert       Concert       @relation(fields: [concertId], references: [id])
+  simulationRun SimulationRun @relation(fields: [simulationRunId], references: [id])
+
+  @@index([concertId, sessionId])
+  @@index([simulationRunId])
+}
+
+model SimulationConfig {
+  id                  String @id @default(uuid())
+  tier                Tier   @unique
+  virtualQueueSize    Int
+  admissionRatePerSec Float
+  botIntensity        Float
+  errorRate           Float
+  latencyMs           Int
+}
+
+model SessionResult {
+  id               String         @id @default(uuid())
+  sessionId        String
+  outcome          SessionOutcome
+  stageTimings     Json
+  contentionLosses Int
+  events           Json
+  createdAt        DateTime       @default(now())
+
+  @@index([sessionId])
+}
