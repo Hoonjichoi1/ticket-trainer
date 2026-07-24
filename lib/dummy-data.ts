@@ -100,6 +100,41 @@ export function getDummySeatMap(
 }
 
 // ---------------------------------------------------------------------
+// Seat zones — UI-only grouping of Seat.number into 5 left-to-right
+// blocks (stage-relative). No schema field backs this; Seat.row (front/
+// back distance) is never used for zone membership. See CLAUDE.md and
+// ROADMAP.md's "구역(Block A~E) 개념은 UI 전용" note.
+// ---------------------------------------------------------------------
+export const SEAT_ZONES = ["A", "B", "C", "D", "E"] as const;
+export type SeatZone = (typeof SEAT_ZONES)[number];
+
+export const ZONE_LABELS: Record<SeatZone, string> = {
+  A: "Block A",
+  B: "Block B",
+  C: "Block C",
+  D: "Block D",
+  E: "Block E",
+};
+
+/** 1-4 -> A, 5-8 -> B, 9-12 -> C, 13-16 -> D, 17-20 -> E. */
+export function getZoneForSeatNumber(number: number): SeatZone {
+  const index = Math.min(Math.floor((number - 1) / 4), SEAT_ZONES.length - 1);
+  return SEAT_ZONES[Math.max(index, 0)];
+}
+
+export function groupSeatsByZone(
+  seats: SeatSummary[],
+): Record<SeatZone, SeatSummary[]> {
+  const groups = Object.fromEntries(
+    SEAT_ZONES.map((zone) => [zone, [] as SeatSummary[]]),
+  ) as Record<SeatZone, SeatSummary[]>;
+  for (const seat of seats) {
+    groups[getZoneForSeatNumber(seat.number)].push(seat);
+  }
+  return groups;
+}
+
+// ---------------------------------------------------------------------
 // Queue position sample
 // ---------------------------------------------------------------------
 export function getDummyQueuePosition(

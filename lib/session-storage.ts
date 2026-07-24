@@ -1,0 +1,43 @@
+// Client-only sessionStorage helpers carrying the selected seat across
+// /seats -> /booking -> /payment -> /result while there's no backend to
+// own this state (Task 005-1). Not part of the deterministic simulation
+// core — pure UI plumbing, safe to remove once a real session API exists.
+
+import type { SeatSummary } from "@/lib/types";
+
+const SELECTED_SEAT_STORAGE_KEY = "ticket-trainer:selected-seat";
+
+export interface SelectedSeatStorage {
+  id: string;
+  row: string;
+  number: number;
+  /** ISO 8601 — when the user confirmed this seat, for display purposes only. */
+  selectedAt: string;
+}
+
+export function saveSelectedSeat(seat: SeatSummary): void {
+  if (typeof window === "undefined") return;
+  const payload: SelectedSeatStorage = {
+    id: seat.id,
+    row: seat.row,
+    number: seat.number,
+    selectedAt: new Date().toISOString(),
+  };
+  window.sessionStorage.setItem(SELECTED_SEAT_STORAGE_KEY, JSON.stringify(payload));
+}
+
+export function getSelectedSeat(): SelectedSeatStorage | null {
+  if (typeof window === "undefined") return null;
+  const raw = window.sessionStorage.getItem(SELECTED_SEAT_STORAGE_KEY);
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as SelectedSeatStorage;
+  } catch {
+    return null;
+  }
+}
+
+export function clearSelectedSeat(): void {
+  if (typeof window === "undefined") return;
+  window.sessionStorage.removeItem(SELECTED_SEAT_STORAGE_KEY);
+}
