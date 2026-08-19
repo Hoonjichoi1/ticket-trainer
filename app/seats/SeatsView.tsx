@@ -11,7 +11,6 @@ import {
 } from "@/lib/dummy-data";
 import { SeatStatus, type SeatSummary } from "@/lib/types";
 import { SeatCell } from "@/app/components/SeatCell";
-import { HoldTimer } from "@/app/components/HoldTimer";
 import { StepIndicator } from "@/app/components/StepIndicator";
 import { saveSelectedSeat } from "@/lib/session-storage";
 
@@ -40,7 +39,6 @@ export default function SeatsView() {
   const [view, setView] = useState<View>("zone");
   const [activeZone, setActiveZone] = useState<SeatZone | null>(null);
   const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null);
-  const [holdExpiresAt] = useState(() => new Date(Date.now() + 5 * 60_000));
 
   function handleZoneSelect(zone: SeatZone) {
     setActiveZone(zone);
@@ -72,16 +70,13 @@ export default function SeatsView() {
 
       {view === "seatmap" && activeZone && (
         <div className="flex flex-col gap-6">
-          <div className="flex items-center justify-between">
-            <button
-              type="button"
-              onClick={handleBack}
-              className="text-sm text-[var(--color-mute)] underline"
-            >
-              ← Back to zone selection
-            </button>
-            <HoldTimer expiresAt={holdExpiresAt} />
-          </div>
+          <button
+            type="button"
+            onClick={handleBack}
+            className="self-start text-sm text-[var(--color-mute)] underline"
+          >
+            ← Back to zone selection
+          </button>
 
           <h2 className="text-center font-[family-name:var(--font-space-grotesk)] text-xl font-semibold text-[var(--color-ink)]">
             {ZONE_LABELS[activeZone]}

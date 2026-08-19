@@ -26,12 +26,25 @@ export function saveSelectedSeat(seat: SeatSummary): void {
   window.sessionStorage.setItem(SELECTED_SEAT_STORAGE_KEY, JSON.stringify(payload));
 }
 
+function isValidSelectedSeat(value: unknown): value is SelectedSeatStorage {
+  if (typeof value !== "object" || value === null) return false;
+  const v = value as Record<string, unknown>;
+  return (
+    typeof v.id === "string" &&
+    typeof v.row === "string" &&
+    typeof v.number === "number" &&
+    typeof v.selectedAt === "string" &&
+    !Number.isNaN(new Date(v.selectedAt).getTime())
+  );
+}
+
 export function getSelectedSeat(): SelectedSeatStorage | null {
   if (typeof window === "undefined") return null;
   const raw = window.sessionStorage.getItem(SELECTED_SEAT_STORAGE_KEY);
   if (!raw) return null;
   try {
-    return JSON.parse(raw) as SelectedSeatStorage;
+    const parsed: unknown = JSON.parse(raw);
+    return isValidSelectedSeat(parsed) ? parsed : null;
   } catch {
     return null;
   }

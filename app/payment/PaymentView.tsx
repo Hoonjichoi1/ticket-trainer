@@ -1,6 +1,6 @@
 "use client";
 
-import { useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { getSelectedSeat } from "@/lib/session-storage";
@@ -64,6 +64,13 @@ export default function PaymentView() {
   const [modalPhase, setModalPhase] = useState<PaymentModalPhase>("loading");
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [errorType, setErrorType] = useState<PaymentErrorType | null>(null);
+  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+
+  useEffect(() => {
+    return () => {
+      if (timerRef.current) clearTimeout(timerRef.current);
+    };
+  }, []);
 
   if (!selectedSeat) {
     return (
@@ -96,10 +103,12 @@ export default function PaymentView() {
 
   function attemptPayment() {
     if (!method) return;
+    if (timerRef.current) clearTimeout(timerRef.current);
     setModalPhase("loading");
     setModalOpen(true);
     const { durationMs } = METHOD_META[method];
-    window.setTimeout(() => {
+    timerRef.current = setTimeout(() => {
+      timerRef.current = null;
       if (forceFailure) {
         setErrorType(Math.random() < 0.5 ? "timeout" : "server_error");
         setModalPhase("failure");

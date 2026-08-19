@@ -2,8 +2,8 @@
 
 ## 상태
 
-- [ ] 진행 중
-- [ ] 완료 — See: `docs/ROADMAP.md` Task 005 항목 업데이트 (모든 서브태스크 완료 시)
+- [x] 진행 중
+- [x] 완료 — See: `docs/ROADMAP.md` Task 005 항목 업데이트 (모든 서브태스크 완료 시)
 
 ## 개요
 
@@ -15,14 +15,14 @@ Task 004의 디자인 시스템·공통 컴포넌트·더미 데이터를 사용
 
 ## 서브태스크 목록
 
-- [ ] **005-1: 공통 기반** — 상태 전달 방식 확정 + 구역 그룹핑 헬퍼. See: `tasks/005-1-shared-state-zone-helper.md`
-- [ ] **005-2: 홈 페이지** (F001, F002). See: `tasks/005-2-home-page.md`
-- [ ] **005-3: 대기열 페이지** (F003, F004). See: `tasks/005-3-queue-page.md`
-- [ ] **005-4: 좌석 선택 페이지** (F005, 구역→좌석 2단계). See: `tasks/005-4-seat-selection-page.md`
-- [ ] **005-5: 예매 정보 페이지** (F013). See: `tasks/005-5-booking-info-page.md`
-- [ ] **005-6: 결제 페이지** (F014). See: `tasks/005-6-payment-page.md`
-- [ ] **005-7: 결과 리포트 페이지** (F011). See: `tasks/005-7-result-page.md`
-- [ ] **005-8: 전체 플로우 통합 검증**. See: `tasks/005-8-e2e-verification.md`
+- [x] **005-1: 공통 기반** — 상태 전달 방식 확정 + 구역 그룹핑 헬퍼. See: `tasks/005-1-shared-state-zone-helper.md`
+- [x] **005-2: 홈 페이지** (F001, F002). See: `tasks/005-2-home-page.md`
+- [x] **005-3: 대기열 페이지** (F003, F004). See: `tasks/005-3-queue-page.md`
+- [x] **005-4: 좌석 선택 페이지** (F005, 구역→좌석 2단계). See: `tasks/005-4-seat-selection-page.md`
+- [x] **005-5: 예매 정보 페이지** (F013). See: `tasks/005-5-booking-info-page.md`
+- [x] **005-6: 결제 페이지** (F014). See: `tasks/005-6-payment-page.md`
+- [x] **005-7: 결과 리포트 페이지** (F011). See: `tasks/005-7-result-page.md`
+- [x] **005-8: 전체 플로우 통합 검증**. See: `tasks/005-8-e2e-verification.md`
 
 ## 관련 파일
 
@@ -35,3 +35,4 @@ Task 004의 디자인 시스템·공통 컴포넌트·더미 데이터를 사용
 ## 변경 사항 요약
 
 > 2026-07-24: 단일 태스크로 진행하기엔 범위가 커서(특히 좌석 선택 페이지의 구역→좌석 2단계 서브플로우) 005-1~005-8 8개 서브태스크로 분할함. 수락 기준·구현 단계는 각 서브태스크 파일로 이관.
+> 2026-08-19: 005-1~005-8 전체 완료. 홈→대기열→좌석→예매정보→결제→결과 선형 플로우가 더미 데이터로 끊김 없이 완주됨(성공/실패 각 1회 검증). 상세 검증 내용은 `tasks/005-8-e2e-verification.md` 참조.
