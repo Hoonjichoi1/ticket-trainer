@@ -1,7 +1,99 @@
-import { NextResponse } from "next/server";
+import { NextRequest, NextResponse } from "next/server";
+import { prisma } from "@/lib/db";
+import { getOrCreateSessionId } from "@/lib/session";
+import {
+  SimulationRunStatus,
+  Tier,
+  type ApiErrorResponse,
+  type StartSimulationRequest,
+  type StartSimulationResponse,
+} from "@/lib/types";
 
-// TODO(Task 004+): issue anonymous session (HTTP-only signed cookie, UUID)
-// and bind an admission token per CLAUDE.md session management notes.
-export async function POST() {
-  return NextResponse.json({ status: "not_implemented" }, { status: 501 });
+// Matches prisma/seed.ts's template exactly (10 rows A-J x 20 seats = 200)
+// so every session-scoped SimulationRun gets the same layout the seed
+// data uses for the one shared Concert.
+const SEAT_ROWS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
+const SEATS_PER_ROW = 20;
+
+function isTier(value: unknown): value is Tier {
+  return typeof value === "string" && (Object.values(Tier) as string[]).includes(value);
+}
+
+// Starts (or restarts) a session's simulation: issues/reuses the
+// anonymous session cookie (F012), ends that session's previous ACTIVE
+// run if any (D-1 "다시 도전" reset), then creates a fresh SimulationRun
+// with its own 200-seat map (F001 backend, D-2: tier arrives as a
+// request param here, not stored on the session cookie itself).
+export async function POST(request: NextRequest) {
+  let body: Partial<StartSimulationRequest>;
+  try {
+    body = await request.json();
+  } catch {
+    return NextResponse.json<ApiErrorResponse>(
+      { status: "error", code: "INVALID_BODY", message: "Request body must be JSON." },
+      { status: 400 },
+    );
+  }
+
+  if (!isTier(body?.tier)) {
+    return NextResponse.json<ApiErrorResponse>(
+      { status: "error", code: "INVALID_TIER", message: "tier is required and must be SMALL, MEDIUM, or MEGA." },
+      { status: 400 },
+    );
+  }
+
+  const concert = body.concertId
+    ? await prisma.concert.findUnique({ where: { id: body.concertId } })
+    : await prisma.concert.findFirst();
+
+  if (!concert) {
+    return NextResponse.json<ApiErrorResponse>(
+      { status: "error", code: "CONCERT_NOT_FOUND", message: "No concert available to start a simulation for." },
+      { status: 404 },
+    );
+  }
+
+  // Cookie must be issued/read before the transaction: getOrCreateSessionId()
+  // calls cookies().set(), which Next.js only allows in a Route Handler /
+  // Server Function — not inside an arbitrary async callback.
+  const { sessionId } = await getOrCreateSessionId();
+
+  const run = await prisma.$transaction(async (tx) => {
+    // Superseded, not "completed" — the user didn't finish this run via
+    // the real flow, a new one just replaced it (retry or duplicate
+    // start). EXPIRED reads closer to that than SimulationRunStatus.COMPLETED,
+    // which Task 011 should reserve for runs that reached a real outcome.
+    await tx.simulationRun.updateMany({
+      where: { sessionId, status: SimulationRunStatus.ACTIVE },
+      data: { status: SimulationRunStatus.EXPIRED },
+    });
+
+    const newRun = await tx.simulationRun.create({
+      data: {
+        concertId: concert.id,
+        sessionId,
+        tier: body.tier as Tier,
+      },
+    });
+
+    await tx.seat.createMany({
+      data: SEAT_ROWS.flatMap((row) =>
+        Array.from({ length: SEATS_PER_ROW }, (_, i) => ({
+          concertId: concert.id,
+          simulationRunId: newRun.id,
+          row,
+          number: i + 1,
+        })),
+      ),
+    });
+
+    return newRun;
+  });
+
+  return NextResponse.json<StartSimulationResponse>({
+    runId: run.id,
+    tier: run.tier,
+    status: run.status,
+    concertId: run.concertId,
+  });
 }

@@ -133,7 +133,7 @@
 >
 > **관측 데이터 원칙:** `stageTimings`·`contentionLosses`·판단 이벤트는 **발생하는 Task(008~010)에서 즉시 기록**한다. Task 011은 기록된 데이터의 집계와 피드백 매핑만 수행한다.
 
-- **Task 006: 익명 세션 시스템 · 시뮬레이션 시작 API 구현 (F012, F001 백엔드)** - 우선순위
+- **Task 006: 익명 세션 시스템 · 시뮬레이션 시작 API 구현 (F012, F001 백엔드)** ✅ - 완료 (See: `/tasks/006-anonymous-session-simulation-start.md`)
   - **선행 조건 근거:** 대기열 순번·hold 소유자·예매 전체의 사용자 식별 기반 → 최우선
   - HTTP-only, 서명 쿠키로 UUID 세션 발급 (`api/session/`) — 회원가입/로그인 없음
   - 모든 API 요청에서 세션 검증 미들웨어 구현
