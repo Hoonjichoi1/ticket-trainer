@@ -17,22 +17,18 @@ import type { Hold } from "@/lib/generated/prisma/client";
  *     task's job; this module only computes how many seats the bot
  *     *should* claim this tick.
  *
- * Known gap (flagged, not solved here): SimulationRun has no persisted
- * bot-progress accumulator or determinism seed — only `lastTickAt`. A
- * naive per-tick floor(botIntensity * elapsedSeconds) can lose fractional
- * progress across many short ticks (frequent polling with low botIntensity
- * may under-claim vs. one long tick covering the same wall-clock span).
- * The real implementation must decide between (a) adding an accumulator
- * field via a follow-up migration, or (b) deriving "bot seats claimed so
- * far" by counting currently-HELD seats owned by the bot session instead
- * of a stored counter.
- *
- * Known gap: concurrent tick requests racing to read-then-write the same
- * SimulationRun.lastTickAt can double-advance it. The pure functions below
- * are safe to call concurrently (no shared mutable state), but the
- * caller's read-modify-write of lastTickAt is not — the real implementation
- * must guard this (e.g. conditional UPDATE ... WHERE lastTickAt = $old
- * RETURNING, or wrap the read+advance in a transaction).
+ * Resolved by the caller (lib/tick.ts), not here:
+ * - Fractional-progress loss: computeBotClaimCount floors every call, so
+ *   naively resetting lastTickAt to `now` every tick would silently drop
+ *   fractional seat progress under frequent low-intensity polling.
+ *   lib/tick.ts avoids adding a schema counter by only advancing
+ *   lastTickAt by the time equivalent of the *whole* seats actually
+ *   claimed (claimCount / botIntensity seconds), carrying the unclaimed
+ *   remainder forward as elapsed time for the next tick.
+ * - Concurrent tick requests double-advancing lastTickAt: lib/tick.ts
+ *   reads it via `SELECT ... FOR UPDATE` inside a DB transaction, so a
+ *   second concurrent tick blocks until the first commits and then reads
+ *   the already-advanced value as its own baseline.
  */
 
 // ---------------------------------------------------------------------
@@ -78,12 +74,14 @@ export interface BotClaimResult {
 }
 
 /**
- * TODO: claimCount = min(floor(botIntensity * elapsed.seconds), availableSeatCount).
- * Actual claim execution (which seats, via the same hold transaction users
- * use) happens later — this only returns a count.
+ * claimCount = floor(botIntensity * elapsed.seconds), capped at
+ * availableSeatCount. Actual claim execution (which seats, via the same
+ * hold transaction users use) happens later — this only returns a count.
  */
 export function computeBotClaimCount(input: BotClaimInput): BotClaimResult {
-  throw new Error(`computeBotClaimCount: not implemented (${JSON.stringify(input)})`);
+  const rawCount = Math.floor(input.botIntensity * input.elapsed.seconds);
+  const claimCount = Math.min(Math.max(0, rawCount), input.availableSeatCount);
+  return { claimCount };
 }
 
 // ---------------------------------------------------------------------
@@ -106,7 +104,7 @@ export interface QueuePositionResult {
 }
 
 /**
- * TODO: position = max(0, initialPosition - admissionRatePerSec * elapsed.seconds).
+ * position = max(0, initialPosition - admissionRatePerSec * elapsed.seconds).
  * Deliberately anchored on each entry's own joinedAt (not a global queue
  * recompute) — this keeps the calc stateless and per-entry, matching the
  * tick-on-request/no-persistent-process constraint.
@@ -114,7 +112,11 @@ export interface QueuePositionResult {
 export function computeQueuePosition(
   input: QueuePositionInput,
 ): QueuePositionResult {
-  throw new Error(`computeQueuePosition: not implemented (${JSON.stringify(input)})`);
+  const position = Math.max(
+    0,
+    input.initialPosition - input.admissionRatePerSec * input.elapsed.seconds,
+  );
+  return { position, admitted: position <= 0 };
 }
 
 // ---------------------------------------------------------------------
@@ -137,12 +139,15 @@ export interface HoldExpiryCheckResult {
 }
 
 /**
- * TODO: filter input.holds where expiresAt < now. Pure filter only — no
- * DB write. The caller executes the actual release transaction
+ * Filters input.holds where expiresAt < now. Pure filter only — no DB
+ * write. The caller executes the actual release transaction
  * (Hold.releasedAt set + Seat.status -> AVAILABLE) using this result.
  */
 export function findExpiredHolds(
   input: HoldExpiryCheckInput,
 ): HoldExpiryCheckResult {
-  throw new Error(`findExpiredHolds: not implemented (${input.holds.length} holds)`);
+  const expired = input.holds
+    .filter((hold) => hold.expiresAt.getTime() < input.now.getTime())
+    .map((hold) => ({ holdId: hold.id, seatId: hold.seatId }));
+  return { expired };
 }
