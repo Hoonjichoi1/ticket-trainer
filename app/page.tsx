@@ -21,12 +21,27 @@ export default function HomePage() {
   const openAt = new Date(concert.openAt);
   const [isOpen, setIsOpen] = useState(() => openAt.getTime() <= Date.now());
   const [selectedTier, setSelectedTier] = useState<Tier | null>(null);
+  const [isStarting, setIsStarting] = useState(false);
 
-  const canBook = isOpen && selectedTier !== null;
+  const canBook = isOpen && selectedTier !== null && !isStarting;
 
-  function handleBook() {
+  async function handleBook() {
     if (!canBook || !selectedTier) return;
-    router.push(`/queue?tier=${selectedTier}`);
+    setIsStarting(true);
+    try {
+      // Starts (or restarts) this session's SimulationRun and records the
+      // chosen tier on it (D-2) — the queue-join API reads the tier from
+      // there, so no ?tier= query param needs to travel with the navigation.
+      const res = await fetch("/api/session", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ tier: selectedTier }),
+      });
+      if (!res.ok) return;
+      router.push("/queue");
+    } finally {
+      setIsStarting(false);
+    }
   }
 
   return (
@@ -81,11 +96,11 @@ export default function HomePage() {
 
       <button
         type="button"
-        onClick={handleBook}
+        onClick={() => void handleBook()}
         disabled={!canBook}
         className="rounded-full bg-[var(--color-brand)] px-6 py-3 font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
       >
-        Book Now
+        {isStarting ? "Starting…" : "Book Now"}
       </button>
     </div>
   );

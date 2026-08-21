@@ -159,14 +159,18 @@ model SimulationConfig {
   latencyMs           Int
 }
 
+// One row per session, upserted incrementally starting at Task 008 (queue
+// join/admission) and appended to by Task 009/010 as stageTimings/events
+// occur. outcome is nullable because it isn't known until the session
+// resolves — Task 011 is the only writer that sets it, when it finalizes
+// the report (ROADMAP "관측 데이터 원칙": events are recorded where they
+// happen, Task 011 only aggregates/reads).
 model SessionResult {
-  id               String         @id @default(uuid())
-  sessionId        String
-  outcome          SessionOutcome
-  stageTimings     Json
-  contentionLosses Int
-  events           Json
-  createdAt        DateTime       @default(now())
-
-  @@index([sessionId])
+  id               String          @id @default(uuid())
+  sessionId        String          @unique
+  outcome          SessionOutcome?
+  stageTimings     Json            @default("{}")
+  contentionLosses Int             @default(0)
+  events           Json            @default("[]")
+  createdAt        DateTime        @default(now())
 }

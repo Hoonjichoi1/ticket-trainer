@@ -1,0 +1,252 @@
+import { describe, it, expect, afterEach } from "vitest";
+import { Tier, QueueEntryStatus } from "@/lib/types";
+import { getTestDb } from "@/lib/test-db";
+import { joinQueue, pollQueue, requireAdmission, redeemAdmissionToken, getActiveRun } from "@/lib/queue";
+
+const db = getTestDb();
+const createdConcertIds: string[] = [];
+const createdRunIds: string[] = [];
+const createdSessionIds: string[] = [];
+
+afterEach(async () => {
+  if (createdSessionIds.length > 0) {
+    await db.sessionResult.deleteMany({ where: { sessionId: { in: createdSessionIds } } });
+  }
+  if (createdRunIds.length > 0) {
+    await db.queueEntry.deleteMany({ where: { simulationRunId: { in: createdRunIds } } });
+    await db.simulationRun.deleteMany({ where: { id: { in: createdRunIds } } });
+  }
+  if (createdConcertIds.length > 0) {
+    await db.concert.deleteMany({ where: { id: { in: createdConcertIds } } });
+  }
+  createdSessionIds.length = 0;
+  createdRunIds.length = 0;
+  createdConcertIds.length = 0;
+});
+
+async function createRun(opts: { tier?: Tier; openAt?: Date } = {}) {
+  const concert = await db.concert.create({
+    data: {
+      title: "queue-test-concert",
+      venue: "queue-test-venue",
+      openAt: opts.openAt ?? new Date("2000-01-01T00:00:00.000Z"),
+    },
+  });
+  createdConcertIds.push(concert.id);
+
+  const sessionId = `queue-test-${crypto.randomUUID()}`;
+  createdSessionIds.push(sessionId);
+
+  const run = await db.simulationRun.create({
+    data: { concertId: concert.id, sessionId, tier: opts.tier ?? Tier.SMALL },
+  });
+  createdRunIds.push(run.id);
+
+  return { run, sessionId };
+}
+
+describe("getActiveRun", () => {
+  it("returns the run for the session's tier and concert openAt", async () => {
+    const { run, sessionId } = await createRun();
+
+    const active = await getActiveRun(sessionId);
+
+    expect(active?.id).toBe(run.id);
+    expect(active?.tier).toBe(Tier.SMALL);
+  });
+
+  it("returns null when the session has no active run", async () => {
+    const active = await getActiveRun(`no-such-session-${crypto.randomUUID()}`);
+    expect(active).toBeNull();
+  });
+});
+
+describe("joinQueue", () => {
+  it("creates a QueueEntry at the tier's virtualQueueSize and marks the queue stage entered", async () => {
+    const { run, sessionId } = await createRun(); // SMALL: virtualQueueSize 500
+    const now = new Date("2026-01-01T00:00:00.000Z");
+
+    const result = await joinQueue({ sessionId, runId: run.id, now });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.snapshot.position).toBe(500);
+    expect(result.snapshot.status).toBe(QueueEntryStatus.WAITING);
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    expect((sessionResult.stageTimings as { queue?: { enteredAt?: string } }).queue?.enteredAt).toBe(
+      now.toISOString(),
+    );
+  });
+
+  it("rejects joining before the concert's openAt", async () => {
+    const openAt = new Date("2026-06-01T00:00:00.000Z");
+    const { run, sessionId } = await createRun({ openAt });
+    const before = new Date(openAt.getTime() - 1000);
+
+    const result = await joinQueue({ sessionId, runId: run.id, now: before });
+
+    expect(result).toEqual({ ok: false, code: "SALE_NOT_OPEN" });
+    const entries = await db.queueEntry.findMany({ where: { simulationRunId: run.id } });
+    expect(entries).toHaveLength(0);
+  });
+
+  it("expires the previous WAITING entry on rejoin and records a queue_reset event with the decayed position", async () => {
+    const { run, sessionId } = await createRun(); // SMALL: rate 5/sec
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    const first = await joinQueue({ sessionId, runId: run.id, now: t0 });
+    if (!first.ok) throw new Error("unreachable");
+
+    const t1 = new Date(t0.getTime() + 10_000); // 500 - 5*10 = 450 decayed position
+    const second = await joinQueue({ sessionId, runId: run.id, now: t1 });
+    if (!second.ok) throw new Error("unreachable");
+    expect(second.snapshot.position).toBe(500);
+
+    const entries = await db.queueEntry.findMany({
+      where: { simulationRunId: run.id },
+      orderBy: { joinedAt: "asc" },
+    });
+    expect(entries).toHaveLength(2);
+    expect(entries[0].status).toBe(QueueEntryStatus.EXPIRED);
+    expect(entries[1].status).toBe(QueueEntryStatus.WAITING);
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    const events = sessionResult.events as unknown as Array<{ type: string; positionBeforeReset?: number }>;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "queue_reset", positionBeforeReset: 450 });
+  });
+
+  it("does not record a queue_reset event on the very first join", async () => {
+    const { run, sessionId } = await createRun();
+    await joinQueue({ sessionId, runId: run.id, now: new Date("2026-01-01T00:00:00.000Z") });
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    expect(sessionResult.events).toEqual([]);
+  });
+});
+
+describe("pollQueue", () => {
+  it("returns NO_ACTIVE_ENTRY when the session hasn't joined the queue", async () => {
+    const { run, sessionId } = await createRun();
+    const result = await pollQueue({ sessionId, runId: run.id, now: new Date() });
+    expect(result).toEqual({ ok: false, code: "NO_ACTIVE_ENTRY" });
+  });
+
+  it("returns the position decayed by elapsed time since joinedAt", async () => {
+    const { run, sessionId } = await createRun(); // SMALL: rate 5/sec
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    await joinQueue({ sessionId, runId: run.id, now: t0 });
+
+    const result = await pollQueue({ sessionId, runId: run.id, now: new Date(t0.getTime() + 10_000) });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.snapshot.position).toBe(450);
+    expect(result.snapshot.status).toBe(QueueEntryStatus.WAITING);
+    expect(result.snapshot.admissionToken).toBeUndefined();
+  });
+
+  it("admits and issues a token exactly once when position reaches 0, and keeps returning the same token", async () => {
+    const { run, sessionId } = await createRun(); // SMALL: virtualQueueSize 500, rate 5/sec -> 100s to admit
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    await joinQueue({ sessionId, runId: run.id, now: t0 });
+
+    const admitted = await pollQueue({ sessionId, runId: run.id, now: new Date(t0.getTime() + 100_000) });
+    if (!admitted.ok) throw new Error("unreachable");
+    expect(admitted.snapshot.status).toBe(QueueEntryStatus.ADMITTED);
+    expect(admitted.snapshot.admissionToken).toBeTruthy();
+
+    const again = await pollQueue({ sessionId, runId: run.id, now: new Date(t0.getTime() + 150_000) });
+    if (!again.ok) throw new Error("unreachable");
+    expect(again.snapshot.admissionToken).toBe(admitted.snapshot.admissionToken);
+  });
+
+  it("does not double-issue a token under concurrent polling at the admission threshold", async () => {
+    const { run, sessionId } = await createRun();
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    await joinQueue({ sessionId, runId: run.id, now: t0 });
+    const admitAt = new Date(t0.getTime() + 100_000);
+
+    const [a, b] = await Promise.all([
+      pollQueue({ sessionId, runId: run.id, now: admitAt }),
+      pollQueue({ sessionId, runId: run.id, now: admitAt }),
+    ]);
+    if (!a.ok || !b.ok) throw new Error("unreachable");
+
+    expect(a.snapshot.admissionToken).toBe(b.snapshot.admissionToken);
+  });
+});
+
+describe("requireAdmission", () => {
+  it("is true once the entry is ADMITTED", async () => {
+    const { run, sessionId } = await createRun();
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    await joinQueue({ sessionId, runId: run.id, now: t0 });
+    await pollQueue({ sessionId, runId: run.id, now: new Date(t0.getTime() + 100_000) });
+
+    expect(await requireAdmission({ sessionId, runId: run.id })).toBe(true);
+  });
+
+  it("is false while still WAITING or before ever joining", async () => {
+    const { run, sessionId } = await createRun();
+    expect(await requireAdmission({ sessionId, runId: run.id })).toBe(false);
+
+    await joinQueue({ sessionId, runId: run.id, now: new Date("2026-01-01T00:00:00.000Z") });
+    expect(await requireAdmission({ sessionId, runId: run.id })).toBe(false);
+  });
+});
+
+describe("redeemAdmissionToken", () => {
+  async function admittedEntry(now = new Date("2026-01-01T00:00:00.000Z")) {
+    const { run, sessionId } = await createRun();
+    await joinQueue({ sessionId, runId: run.id, now });
+    const admitted = await pollQueue({ sessionId, runId: run.id, now: new Date(now.getTime() + 100_000) });
+    if (!admitted.ok || !admitted.snapshot.admissionToken) throw new Error("unreachable");
+    return { run, sessionId, token: admitted.snapshot.admissionToken };
+  }
+
+  it("accepts a valid token, invalidates it, and records the queue stage as exited", async () => {
+    const { run, sessionId, token } = await admittedEntry();
+
+    const result = await redeemAdmissionToken({ sessionId, runId: run.id, token, now: new Date() });
+
+    expect(result).toBe("ok");
+    const entry = await db.queueEntry.findFirstOrThrow({ where: { simulationRunId: run.id } });
+    expect(entry.admissionToken).toBeNull();
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    expect((sessionResult.stageTimings as { queue?: { exitedAt?: string } }).queue?.exitedAt).toBeTruthy();
+  });
+
+  it("rejects an incorrect token without consuming the real one", async () => {
+    const { run, sessionId, token } = await admittedEntry();
+
+    const result = await redeemAdmissionToken({ sessionId, runId: run.id, token: "forged-token", now: new Date() });
+
+    expect(result).toBe("invalid");
+    const entry = await db.queueEntry.findFirstOrThrow({ where: { simulationRunId: run.id } });
+    expect(entry.admissionToken).toBe(token);
+  });
+
+  it("rejects reuse of an already-redeemed token", async () => {
+    const { run, sessionId, token } = await admittedEntry();
+    await redeemAdmissionToken({ sessionId, runId: run.id, token, now: new Date() });
+
+    const second = await redeemAdmissionToken({ sessionId, runId: run.id, token, now: new Date() });
+
+    expect(second).toBe("invalid");
+  });
+
+  it("rejects a token redeemed under a different session", async () => {
+    const { run, token } = await admittedEntry();
+
+    const result = await redeemAdmissionToken({
+      sessionId: `other-session-${crypto.randomUUID()}`,
+      runId: run.id,
+      token,
+      now: new Date(),
+    });
+
+    expect(result).toBe("invalid");
+  });
+});
