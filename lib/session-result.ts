@@ -69,6 +69,18 @@ export async function recordJudgmentEvent(db: Db, sessionId: string, event: Judg
   await db.sessionResult.update({ where: { id: row.id }, data: { events: toJson([...events, event]) } });
 }
 
+/**
+ * Increments SessionResult.contentionLosses by 1 (Task 009: a seat claim
+ * attempt lost to a bot/other session). Uses Prisma's atomic `increment`
+ * (a single `UPDATE ... SET x = x + 1`, not read-then-write) so concurrent
+ * losses in the same session can't clobber each other the way a
+ * read-modify-write would.
+ */
+export async function incrementContentionLosses(db: Db, sessionId: string): Promise<void> {
+  const row = await getOrCreate(db, sessionId);
+  await db.sessionResult.update({ where: { id: row.id }, data: { contentionLosses: { increment: 1 } } });
+}
+
 // Prisma's InputJsonValue type requires structural index signatures that
 // our domain types (StageTimings, JudgmentEvent[]) don't declare — this
 // cast is safe since both are plain JSON-serializable shapes by construction.

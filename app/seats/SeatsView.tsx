@@ -1,22 +1,35 @@
 "use client";
 
-import { useMemo, useState } from "react";
+import { useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 import {
-  getDummySeatMap,
   groupSeatsByZone,
   SEAT_ZONES,
   ZONE_LABELS,
   type SeatZone,
 } from "@/lib/dummy-data";
-import { SeatStatus, type SeatSummary } from "@/lib/types";
+import {
+  SeatStatus,
+  type ApiErrorResponse,
+  type SeatClaimResponse,
+  type SeatMapResponse,
+  type SeatSummary,
+} from "@/lib/types";
 import { SeatCell } from "@/app/components/SeatCell";
 import { StepIndicator } from "@/app/components/StepIndicator";
+import { WarningBanner } from "@/app/components/WarningBanner";
+import { HoldTimer } from "@/app/components/HoldTimer";
 import { saveSelectedSeat } from "@/lib/session-storage";
 
 type View = "zone" | "seatmap";
 
 const ZONE_ORDER: SeatZone[] = [...SEAT_ZONES];
+const POLL_INTERVAL_MS = 2000;
+
+interface Selection {
+  seatId: string;
+  holdExpiresAt: string;
+}
 
 function chunkIntoRows(seats: SeatSummary[]): SeatSummary[][] {
   const rows: SeatSummary[][] = [];
@@ -27,37 +40,135 @@ function chunkIntoRows(seats: SeatSummary[]): SeatSummary[][] {
 }
 
 /**
- * Rendered only on the client (see app/seats/page.tsx's `dynamic(..., {
- * ssr: false })`): getDummySeatMap() calls Math.random() per seat, so an
- * SSR pass would compute a different seat map than the client and trigger
- * a hydration mismatch on the "N/40 open" zone counts.
+ * Real seat map (Task 009): polls GET /api/seats every 2s (tick-on-request
+ * — each poll runs the server's expired-hold release + bot claim before
+ * returning the map, per CLAUDE.md's polling interval guidance) and
+ * claims a seat the instant it's clicked via POST /api/seats (PRD F006:
+ * "좌석 클릭 → 선점 성공/실패 즉시 피드백"). "Confirm Seat Selection" only
+ * navigates on an already-held seat — it never re-requests a claim.
  */
 export default function SeatsView() {
   const router = useRouter();
-  const [seatMap] = useState(() => getDummySeatMap());
-  const zones = useMemo(() => groupSeatsByZone(seatMap.seats), [seatMap]);
+  const [seats, setSeats] = useState<SeatSummary[] | null>(null);
   const [view, setView] = useState<View>("zone");
   const [activeZone, setActiveZone] = useState<SeatZone | null>(null);
-  const [selectedSeatId, setSelectedSeatId] = useState<string | null>(null);
+  const [selection, setSelection] = useState<Selection | null>(null);
+  const [conflictMessage, setConflictMessage] = useState<string | null>(null);
+  const [errorMessage, setErrorMessage] = useState<string | null>(null);
+  const claimingRef = useRef(false);
+
+  useEffect(() => {
+    let cancelled = false;
+    let timer: ReturnType<typeof setTimeout> | undefined;
+
+    async function poll() {
+      try {
+        const res = await fetch("/api/seats");
+        if (cancelled) return;
+
+        if (!res.ok) {
+          const body = (await res.json()) as ApiErrorResponse;
+          setErrorMessage(body.message);
+          return;
+        }
+
+        const body = (await res.json()) as SeatMapResponse;
+        setSeats(body.seats);
+        setErrorMessage(null);
+      } catch {
+        if (!cancelled) setErrorMessage("Connection lost. Retrying…");
+      } finally {
+        if (!cancelled) {
+          timer = setTimeout(() => void poll(), POLL_INTERVAL_MS);
+        }
+      }
+    }
+
+    void poll();
+
+    return () => {
+      cancelled = true;
+      if (timer) clearTimeout(timer);
+    };
+  }, []);
+
+  const zones = useMemo(() => (seats ? groupSeatsByZone(seats) : null), [seats]);
 
   function handleZoneSelect(zone: SeatZone) {
     setActiveZone(zone);
-    setSelectedSeatId(null);
     setView("seatmap");
   }
 
   function handleBack() {
     setView("zone");
     setActiveZone(null);
-    setSelectedSeatId(null);
+  }
+
+  async function handleSeatClick(seatId: string) {
+    // Ticket count is fixed at 1 (PRD F013) — once a claim succeeds, further
+    // clicks are ignored until this page navigates away.
+    if (selection || claimingRef.current) return;
+    claimingRef.current = true;
+    setConflictMessage(null);
+
+    try {
+      const res = await fetch("/api/seats", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ seatId }),
+      });
+
+      if (!res.ok) {
+        const body = (await res.json()) as ApiErrorResponse;
+        setErrorMessage(body.message);
+        return;
+      }
+
+      const result = (await res.json()) as SeatClaimResponse;
+      if (result.status === "held") {
+        setSelection({ seatId, holdExpiresAt: result.holdExpiresAt });
+      } else {
+        setConflictMessage("That seat was just taken — pick another one.");
+        // Reflect the loss immediately instead of waiting for the next poll.
+        const res2 = await fetch("/api/seats");
+        if (res2.ok) {
+          const body = (await res2.json()) as SeatMapResponse;
+          setSeats(body.seats);
+        }
+      }
+    } catch {
+      setErrorMessage("Connection lost. Please try again.");
+    } finally {
+      claimingRef.current = false;
+    }
   }
 
   function handleConfirm() {
-    if (!activeZone || !selectedSeatId) return;
-    const seat = zones[activeZone].find((s) => s.id === selectedSeatId);
+    if (!activeZone || !selection || !seats) return;
+    const seat = seats.find((s) => s.id === selection.seatId);
     if (!seat) return;
-    saveSelectedSeat(seat);
+    saveSelectedSeat(seat, selection.holdExpiresAt);
     router.push("/booking");
+  }
+
+  if (errorMessage) {
+    return (
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-8">
+        <StepIndicator currentStage="seats" />
+        <WarningBanner tone="danger" message={errorMessage} />
+      </div>
+    );
+  }
+
+  if (!seats || !zones) {
+    return (
+      <div className="mx-auto flex w-full max-w-3xl flex-1 flex-col gap-8 p-8">
+        <StepIndicator currentStage="seats" />
+        <p className="text-center text-sm text-[var(--color-mute)]">
+          Loading seat map…
+        </p>
+      </div>
+    );
   }
 
   return (
@@ -82,6 +193,15 @@ export default function SeatsView() {
             {ZONE_LABELS[activeZone]}
           </h2>
 
+          {conflictMessage && <WarningBanner tone="danger" message={conflictMessage} />}
+
+          {selection && (
+            <div className="flex flex-col items-center gap-1 text-center">
+              <span className="text-sm text-[var(--color-mute)]">Seat held — complete checkout before it expires</span>
+              <HoldTimer expiresAt={new Date(selection.holdExpiresAt)} />
+            </div>
+          )}
+
           <div className="flex flex-col items-center gap-2">
             {chunkIntoRows(zones[activeZone]).map((row, index) => (
               <div key={index} className="flex gap-2">
@@ -92,8 +212,8 @@ export default function SeatsView() {
                     row={seat.row}
                     number={seat.number}
                     status={seat.status}
-                    selected={seat.id === selectedSeatId}
-                    onSelect={setSelectedSeatId}
+                    selected={seat.id === selection?.seatId}
+                    onSelect={handleSeatClick}
                   />
                 ))}
               </div>
@@ -103,7 +223,7 @@ export default function SeatsView() {
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={!selectedSeatId}
+            disabled={!selection}
             className="self-center rounded-full bg-[var(--color-brand)] px-6 py-3 font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
           >
             Confirm Seat Selection

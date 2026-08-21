@@ -1,6 +1,11 @@
 import { describe, it, expect, afterEach } from "vitest";
 import { getTestDb } from "@/lib/test-db";
-import { recordStageEntered, recordStageExited, recordJudgmentEvent } from "@/lib/session-result";
+import {
+  recordStageEntered,
+  recordStageExited,
+  recordJudgmentEvent,
+  incrementContentionLosses,
+} from "@/lib/session-result";
 import type { JudgmentEvent, StageTimings } from "@/lib/types";
 
 const db = getTestDb();
@@ -99,5 +104,27 @@ describe("recordJudgmentEvent", () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual(eventA);
     expect(events[1]).toEqual(eventB);
+  });
+});
+
+describe("incrementContentionLosses", () => {
+  it("creates a SessionResult row starting at 1 on the first call", async () => {
+    const sessionId = freshSessionId();
+
+    await incrementContentionLosses(db, sessionId);
+
+    const row = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    expect(row.contentionLosses).toBe(1);
+  });
+
+  it("accumulates across repeated calls instead of resetting", async () => {
+    const sessionId = freshSessionId();
+
+    await incrementContentionLosses(db, sessionId);
+    await incrementContentionLosses(db, sessionId);
+    await incrementContentionLosses(db, sessionId);
+
+    const row = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    expect(row.contentionLosses).toBe(3);
   });
 });

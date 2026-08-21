@@ -13,15 +13,24 @@ export interface SelectedSeatStorage {
   number: number;
   /** ISO 8601 — when the user confirmed this seat, for display purposes only. */
   selectedAt: string;
+  /**
+   * ISO 8601 — the real Hold expiry from POST /api/seats (Task 009). Stored
+   * alongside selectedAt so a later task can switch the booking/payment
+   * pages' hold timers to this server-issued value instead of their current
+   * `selectedAt + hardcoded 5min` calculation, without touching this storage
+   * layer again.
+   */
+  holdExpiresAt: string;
 }
 
-export function saveSelectedSeat(seat: SeatSummary): void {
+export function saveSelectedSeat(seat: SeatSummary, holdExpiresAt: string): void {
   if (typeof window === "undefined") return;
   const payload: SelectedSeatStorage = {
     id: seat.id,
     row: seat.row,
     number: seat.number,
     selectedAt: new Date().toISOString(),
+    holdExpiresAt,
   };
   window.sessionStorage.setItem(SELECTED_SEAT_STORAGE_KEY, JSON.stringify(payload));
 }
@@ -34,7 +43,9 @@ function isValidSelectedSeat(value: unknown): value is SelectedSeatStorage {
     typeof v.row === "string" &&
     typeof v.number === "number" &&
     typeof v.selectedAt === "string" &&
-    !Number.isNaN(new Date(v.selectedAt).getTime())
+    !Number.isNaN(new Date(v.selectedAt).getTime()) &&
+    typeof v.holdExpiresAt === "string" &&
+    !Number.isNaN(new Date(v.holdExpiresAt).getTime())
   );
 }
 
