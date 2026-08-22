@@ -1,15 +1,11 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import Link from "next/link";
 import { useRouter } from "next/navigation";
-import { getSelectedSeat } from "@/lib/session-storage";
-import type { DummyCardDetails, PaymentErrorType, PaymentMethod } from "@/lib/types";
+import type { DummyCardDetails, PaymentErrorType, PaymentMethod, SubmitPaymentResponse } from "@/lib/types";
 import { HoldTimer } from "@/app/components/HoldTimer";
 import { StepIndicator } from "@/app/components/StepIndicator";
 import { PaymentModal, type PaymentModalPhase } from "@/app/components/PaymentModal";
-
-const HOLD_DURATION_MS = 5 * 60_000;
 
 const METHOD_META: Record<
   PaymentMethod,
@@ -49,49 +45,53 @@ const EMPTY_CARD_DETAILS: DummyCardDetails = {
   cvc: "",
 };
 
+export interface PaymentViewProps {
+  seat: { id: string; row: string; number: number };
+  /** ISO 8601 — server-confirmed Hold.expiresAt (app/payment/page.tsx), not a client-side guess. */
+  holdExpiresAt: string;
+}
+
 /**
- * Rendered only on the client (see app/payment/PaymentViewLoader.tsx) — same
- * sessionStorage hydration-mismatch reason as app/booking/BookingView.tsx.
+ * Rendered only on the client (see app/payment/PaymentViewLoader.tsx).
+ * Task 010 replaces the old client-only setTimeout/Math.random()
+ * simulation with a real POST /api/payment call — the server (not this
+ * component) now decides success/failure via SimulationConfig.errorRate.
+ * The per-method durationMs stays as a client-side spinner pace only (pure
+ * UX per PRD F014's "수단별 소요 시간 상이" framing); the server adds its
+ * own tier-based latencyMs delay independently inside attemptPayment.
  */
-export default function PaymentView() {
+export default function PaymentView({ seat, holdExpiresAt }: PaymentViewProps) {
   const router = useRouter();
-  const [selectedSeat] = useState(() => getSelectedSeat());
   const [method, setMethod] = useState<PaymentMethod | null>(null);
   const [cardDetails, setCardDetails] = useState<DummyCardDetails>(EMPTY_CARD_DETAILS);
-  const [forceFailure, setForceFailure] = useState(false);
 
   const [modalOpen, setModalOpen] = useState(false);
   const [modalPhase, setModalPhase] = useState<PaymentModalPhase>("loading");
   const [bookingId, setBookingId] = useState<string | null>(null);
   const [errorType, setErrorType] = useState<PaymentErrorType | null>(null);
-  const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const spinnerTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
   useEffect(() => {
     return () => {
-      if (timerRef.current) clearTimeout(timerRef.current);
+      if (spinnerTimerRef.current) clearTimeout(spinnerTimerRef.current);
     };
   }, []);
 
-  if (!selectedSeat) {
-    return (
-      <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 p-8">
-        <StepIndicator currentStage="payment" />
-        <div className="flex flex-col items-center gap-4 rounded-2xl border border-[var(--color-border)] bg-[var(--color-surface)] p-8 text-center">
-          <p className="text-[var(--color-ink)]">No seat selected yet.</p>
-          <Link
-            href="/seats"
-            className="rounded-full bg-[var(--color-brand)] px-6 py-3 font-semibold text-white"
-          >
-            Go choose a seat
-          </Link>
-        </div>
-      </div>
-    );
-  }
+  // Best-effort hold release on navigation away/tab close (CLAUDE.md:
+  // sendBeacon, not guaranteed to fire or arrive — the 5-minute Hold
+  // expiry remains the real safety net). If the session's last recorded
+  // payment event was payment_error, the server records payment_abandoned;
+  // otherwise this is a no-op judgment-event-wise (see lib/seats.ts's
+  // releaseHold).
+  useEffect(() => {
+    function handlePageHide() {
+      navigator.sendBeacon("/api/holds/release");
+    }
+    window.addEventListener("pagehide", handlePageHide);
+    return () => window.removeEventListener("pagehide", handlePageHide);
+  }, []);
 
-  const holdExpiresAt = new Date(
-    new Date(selectedSeat.selectedAt).getTime() + HOLD_DURATION_MS,
-  );
+  const holdExpiresAtDate = new Date(holdExpiresAt);
 
   const isCardFilled =
     cardDetails.cardNumber.trim() !== "" &&
@@ -101,22 +101,42 @@ export default function PaymentView() {
 
   const canPay = method !== null && (method !== "card" || isCardFilled);
 
-  function attemptPayment() {
+  async function attemptPayment() {
     if (!method) return;
-    if (timerRef.current) clearTimeout(timerRef.current);
+    if (spinnerTimerRef.current) clearTimeout(spinnerTimerRef.current);
     setModalPhase("loading");
     setModalOpen(true);
+
     const { durationMs } = METHOD_META[method];
-    timerRef.current = setTimeout(() => {
-      timerRef.current = null;
-      if (forceFailure) {
-        setErrorType(Math.random() < 0.5 ? "timeout" : "server_error");
-        setModalPhase("failure");
-      } else {
-        setBookingId(`BKG-${Math.random().toString(36).slice(2, 8).toUpperCase()}`);
+    await new Promise<void>((resolve) => {
+      spinnerTimerRef.current = setTimeout(() => {
+        spinnerTimerRef.current = null;
+        resolve();
+      }, durationMs);
+    });
+
+    try {
+      const res = await fetch("/api/payment", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ method, cardDetails: method === "card" ? cardDetails : undefined }),
+      });
+      const json: SubmitPaymentResponse = await res.json();
+
+      if (json.status === "success") {
+        setBookingId(json.bookingId);
         setModalPhase("success");
+      } else if (json.status === "hold_expired") {
+        setModalOpen(false);
+        router.push("/seats");
+      } else {
+        setErrorType(json.errorType);
+        setModalPhase("failure");
       }
-    }, durationMs);
+    } catch {
+      setErrorType("server_error");
+      setModalPhase("failure");
+    }
   }
 
   function handleModalClose() {
@@ -135,13 +155,13 @@ export default function PaymentView() {
         <div>
           <p className="text-xs text-[var(--color-mute)]">Selected seat</p>
           <p className="font-mono text-2xl font-semibold text-[var(--color-ink)]">
-            {selectedSeat.row}
-            {selectedSeat.number}
+            {seat.row}
+            {seat.number}
           </p>
         </div>
         <div className="text-right">
           <p className="text-xs text-[var(--color-mute)]">Hold expires in</p>
-          <HoldTimer expiresAt={holdExpiresAt} />
+          <HoldTimer expiresAt={holdExpiresAtDate} onExpire={() => router.push("/seats")} />
         </div>
       </div>
 
@@ -238,15 +258,6 @@ export default function PaymentView() {
           </div>
         )}
       </div>
-
-      <label className="flex cursor-pointer items-center gap-2 self-center text-xs text-[var(--color-mute)]">
-        <input
-          type="checkbox"
-          checked={forceFailure}
-          onChange={(event) => setForceFailure(event.target.checked)}
-        />
-        Simulate a payment failure (test)
-      </label>
 
       <button
         type="button"

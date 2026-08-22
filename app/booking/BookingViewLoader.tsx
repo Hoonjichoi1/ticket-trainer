@@ -2,14 +2,17 @@
 
 import dynamic from "next/dynamic";
 import { StepIndicator } from "@/app/components/StepIndicator";
+import type { BookingViewProps } from "./BookingView";
 
 // `ssr: false` is only allowed inside a Client Component (per
 // node_modules/next/dist/docs/01-app/02-guides/lazy-loading.md) — this
 // file exists solely to host that call so app/booking/page.tsx can stay a
-// plain Server Component. BookingView reads sessionStorage, which is
-// always empty during SSR, so rendering it server-side would
-// hydration-mismatch against the client's real value (see
-// app/seats/SeatsViewLoader.tsx for the same pattern).
+// Server Component that does the real hold-ownership guard (Task 010).
+// BookingView itself no longer reads sessionStorage; app/booking/page.tsx
+// passes the server-confirmed seat/holdExpiresAt down as props, so there's
+// still a client/server boundary here but no hydration-mismatch risk to
+// route around (contrast app/seats/SeatsViewLoader.tsx, which does have
+// one since SeatsView owns its own client-only polling state).
 const BookingView = dynamic(() => import("./BookingView"), {
   ssr: false,
   loading: () => (
@@ -20,6 +23,6 @@ const BookingView = dynamic(() => import("./BookingView"), {
   ),
 });
 
-export default function BookingViewLoader() {
-  return <BookingView />;
+export default function BookingViewLoader(props: BookingViewProps) {
+  return <BookingView {...props} />;
 }

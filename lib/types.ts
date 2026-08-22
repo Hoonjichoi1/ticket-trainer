@@ -177,7 +177,14 @@ export interface SubmitPaymentRequest {
 }
 export type SubmitPaymentResponse =
   | { status: "success"; bookingId: string }
-  | { status: "error"; errorType: PaymentErrorType };
+  | { status: "error"; errorType: PaymentErrorType }
+  // Task 010: the session's hold was gone (never existed, or expired and
+  // was swept) by the time payment was attempted — distinct from
+  // "error" so the client doesn't invite a pointless retry (the seat is
+  // gone; retrying the same request can't succeed). Mirrors
+  // SubmitBookingInfoResponse's "hold_expired" variant for the same
+  // situation at the booking-info step.
+  | { status: "hold_expired" };
 
 // Result report
 export interface FeedbackItem {

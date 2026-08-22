@@ -2,14 +2,14 @@
 
 import dynamic from "next/dynamic";
 import { StepIndicator } from "@/app/components/StepIndicator";
+import type { PaymentViewProps } from "./PaymentView";
 
 // `ssr: false` is only allowed inside a Client Component (per
 // node_modules/next/dist/docs/01-app/02-guides/lazy-loading.md) — this
 // file exists solely to host that call so app/payment/page.tsx can stay a
-// plain Server Component. PaymentView reads sessionStorage, which is
-// always empty during SSR, so rendering it server-side would
-// hydration-mismatch against the client's real value (see
-// app/booking/BookingViewLoader.tsx for the same pattern).
+// Server Component that does the real hold-ownership guard (Task 010).
+// See app/booking/BookingViewLoader.tsx for the same pattern: seat/
+// holdExpiresAt now arrive as server-confirmed props, not sessionStorage.
 const PaymentView = dynamic(() => import("./PaymentView"), {
   ssr: false,
   loading: () => (
@@ -20,6 +20,6 @@ const PaymentView = dynamic(() => import("./PaymentView"), {
   ),
 });
 
-export default function PaymentViewLoader() {
-  return <PaymentView />;
+export default function PaymentViewLoader(props: PaymentViewProps) {
+  return <PaymentView {...props} />;
 }

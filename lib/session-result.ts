@@ -70,6 +70,21 @@ export async function recordJudgmentEvent(db: Db, sessionId: string, event: Judg
 }
 
 /**
+ * Read-only lookup of a session's recorded events, or [] if no
+ * SessionResult row exists yet (unlike the write helpers above, this
+ * never creates one). Task 010 uses this to check whether the most
+ * recent payment-stage event was a `payment_error` — deciding whether a
+ * later success is a retry (`payment_retry_success`) or a later hold
+ * release is an abandonment (`payment_abandoned`) — without the caller
+ * (or the client) needing to track that state itself.
+ */
+export async function getSessionEvents(db: Db, sessionId: string): Promise<JudgmentEvent[]> {
+  const row = await db.sessionResult.findUnique({ where: { sessionId } });
+  if (!row) return [];
+  return (Array.isArray(row.events) ? row.events : []) as unknown as JudgmentEvent[];
+}
+
+/**
  * Increments SessionResult.contentionLosses by 1 (Task 009: a seat claim
  * attempt lost to a bot/other session). Uses Prisma's atomic `increment`
  * (a single `UPDATE ... SET x = x + 1`, not read-then-write) so concurrent

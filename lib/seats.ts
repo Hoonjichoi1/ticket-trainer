@@ -11,7 +11,7 @@ import type { Prisma } from "@/lib/generated/prisma/client";
 import { SeatStatus, type SeatSummary, type SeatClaimResponse } from "@/lib/types";
 import { findExpiredHolds } from "@/lib/simulation";
 import { advanceTick } from "@/lib/tick";
-import { recordJudgmentEvent } from "@/lib/session-result";
+import { recordJudgmentEvent, getSessionEvents } from "@/lib/session-result";
 
 export const HOLD_DURATION_MS = 5 * 60_000;
 
@@ -119,6 +119,77 @@ export async function seatBelongsToRun(params: { seatId: string; runId: string }
   return seat?.simulationRunId === params.runId;
 }
 
+export interface OwnedHold {
+  holdId: string;
+  seatId: string;
+  row: string;
+  number: number;
+  expiresAt: Date;
+}
+
+/**
+ * The session's currently active (releasedAt IS NULL) hold within a run,
+ * or null if it has none — Task 010's source of truth for "which seat is
+ * this session holding right now" on the booking-info/payment pages.
+ * Looked up by sessionId, not a client-supplied seatId, so there's
+ * nothing for a caller to spoof. Callers are expected to run
+ * releaseExpiredHolds({ runId, now }) first (GET /api/seats normally does
+ * this via runSeatMapTick, but booking/payment aren't polled, so their
+ * page/route guards call it directly) — this function itself does not
+ * check expiresAt, it trusts releasedAt as already-current.
+ */
+export async function getOwnedHold(params: { sessionId: string; runId: string }): Promise<OwnedHold | null> {
+  const hold = await prisma.hold.findFirst({
+    where: { sessionId: params.sessionId, releasedAt: null, seat: { simulationRunId: params.runId } },
+    include: { seat: true },
+  });
+  if (!hold) return null;
+
+  return { holdId: hold.id, seatId: hold.seatId, row: hold.seat.row, number: hold.seat.number, expiresAt: hold.expiresAt };
+}
+
+/**
+ * Explicitly releases the session's active hold regardless of whether it
+ * has expired yet (Task 010, F010 "새로고침·뒤로가기 → hold 상실 + 좌석
+ * 방출"): sets Hold.releasedAt and flips Seat.status back to AVAILABLE in
+ * the same transaction, same pairing rule as releaseExpiredHolds. Records
+ * a payment_abandoned judgment event only when this session's most recent
+ * payment-stage event was payment_error — i.e. only when this release
+ * follows a failed payment attempt, not a plain early exit from
+ * seats/booking (which has no dedicated judgment event; the 5-minute
+ * expiry safety net covers that case via hold_expired). Returns
+ * released:false as a no-op if there was nothing to release, so the
+ * sendBeacon-driven caller can stay idempotent against retries/duplicate
+ * unload events.
+ */
+export async function releaseHold(params: {
+  sessionId: string;
+  runId: string;
+  now: Date;
+}): Promise<{ released: boolean }> {
+  const { sessionId, runId, now } = params;
+
+  const hold = await getOwnedHold({ sessionId, runId });
+  if (!hold) return { released: false };
+
+  await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    await tx.hold.update({ where: { id: hold.holdId }, data: { releasedAt: now } });
+    await tx.seat.update({ where: { id: hold.seatId }, data: { status: SeatStatus.AVAILABLE } });
+
+    const events = await getSessionEvents(tx, sessionId);
+    const lastPaymentEvent = [...events].reverse().find((event) => event.stage === "payment");
+    if (lastPaymentEvent?.type === "payment_error") {
+      await recordJudgmentEvent(tx, sessionId, {
+        type: "payment_abandoned",
+        stage: "payment",
+        timestamp: now.toISOString(),
+      });
+    }
+  });
+
+  return { released: true };
+}
+
 /** Full seat map for a run (~200 seats), mapped to the SeatMapResponse shape. */
 export async function listSeatMap(params: { runId: string }): Promise<SeatSummary[]> {
   const seats = await prisma.seat.findMany({
@@ -143,7 +214,7 @@ export interface SeatMapTickResult {
 }
 
 /**
- * One GET /api/seats poll's worth of tick work, in order: (1) release any
+ *  tick work,One GET /api/seats poll's worth of in order: (1) release any
  * expired holds so freed seats are eligible this tick, (2) advanceTick
  * (Task 007) against the now-current available count to get the bot's
  * claimCount, (3) execute that many real claimSeat() calls against random

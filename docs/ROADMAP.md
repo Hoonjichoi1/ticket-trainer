@@ -187,7 +187,7 @@
     - 엣지: 이중 hold 방지 유니크 제약 동작, 만료 경계 시점 처리
     - E2E (Playwright MCP): 좌석 클릭 성공/실패 피드백, 봇이 좌석 가져가는 실시간 갱신, hold 타이머 시작
 
-- **Task 010: 예매 정보 · 결제 · 실패 대응 분기 API (F013, F014, F009, F010, F007)**
+- **Task 010: 예매 정보 · 결제 · 실패 대응 분기 API (F013, F014, F009, F010, F007)** ✅ - 완료 (See: `/tasks/010-booking-payment-failure-handling.md`)
   - **선행 조건:** Task 009(hold 원자성 검증 완료)
   - `api/booking/` 예매 정보 확정 (매수 1매, 수령 방법, 약관 동의) — hold 유효성 검증
   - `api/payment/` 모의 결제:

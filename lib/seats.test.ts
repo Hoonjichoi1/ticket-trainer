@@ -7,10 +7,13 @@ import {
   listSeatMap,
   runSeatMapTick,
   seatBelongsToRun,
+  getOwnedHold,
+  releaseHold,
   botSessionId,
   isBotSession,
   HOLD_DURATION_MS,
 } from "@/lib/seats";
+import { recordJudgmentEvent } from "@/lib/session-result";
 
 const db = getTestDb();
 const createdConcertIds: string[] = [];
@@ -342,5 +345,118 @@ describe("runSeatMapTick", () => {
       expect(tickResult.botClaim.claimCount).toBeGreaterThanOrEqual(1);
       expect(holds[0].sessionId).toBe(botSessionId(run.id));
     }
+  });
+});
+
+describe("getOwnedHold", () => {
+  it("returns the session's active hold with its seat info", async () => {
+    const run = await createRun();
+    const sessionId = freshSessionId();
+    const expiresAt = new Date("2026-01-01T00:05:00.000Z");
+    const { seat, hold } = await createHeldSeat({ runId: run.id, concertId: run.concertId, sessionId, expiresAt });
+
+    const result = await getOwnedHold({ sessionId, runId: run.id });
+
+    expect(result).toEqual({ holdId: hold.id, seatId: seat.id, row: seat.row, number: seat.number, expiresAt });
+  });
+
+  it("returns null when the session has no active hold", async () => {
+    const run = await createRun();
+    expect(await getOwnedHold({ sessionId: freshSessionId(), runId: run.id })).toBeNull();
+  });
+
+  it("returns null for a hold already released, even if it belongs to the session", async () => {
+    const run = await createRun();
+    const sessionId = freshSessionId();
+    const { hold } = await createHeldSeat({
+      runId: run.id,
+      concertId: run.concertId,
+      sessionId,
+      expiresAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+    await db.hold.update({ where: { id: hold.id }, data: { releasedAt: new Date() } });
+
+    expect(await getOwnedHold({ sessionId, runId: run.id })).toBeNull();
+  });
+
+  it("does not return another session's hold on the same run", async () => {
+    const run = await createRun();
+    await createHeldSeat({
+      runId: run.id,
+      concertId: run.concertId,
+      sessionId: freshSessionId(),
+      expiresAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+
+    expect(await getOwnedHold({ sessionId: freshSessionId(), runId: run.id })).toBeNull();
+  });
+});
+
+describe("releaseHold", () => {
+  it("releases the session's active hold: Seat back to AVAILABLE, Hold.releasedAt set", async () => {
+    const run = await createRun();
+    const sessionId = freshSessionId();
+    const now = new Date("2026-01-01T00:02:00.000Z");
+    const { seat, hold } = await createHeldSeat({
+      runId: run.id,
+      concertId: run.concertId,
+      sessionId,
+      expiresAt: new Date("2026-01-01T00:05:00.000Z"), // not expired yet — explicit release doesn't care
+    });
+
+    const result = await releaseHold({ sessionId, runId: run.id, now });
+
+    expect(result).toEqual({ released: true });
+    const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
+    expect(persistedSeat.status).toBe(SeatStatus.AVAILABLE);
+    const persistedHold = await db.hold.findUniqueOrThrow({ where: { id: hold.id } });
+    expect(persistedHold.releasedAt?.getTime()).toBe(now.getTime());
+  });
+
+  it("is a no-op returning released:false when the session has no active hold", async () => {
+    const run = await createRun();
+    const result = await releaseHold({ sessionId: freshSessionId(), runId: run.id, now: new Date() });
+    expect(result).toEqual({ released: false });
+  });
+
+  it("records payment_abandoned when the session's last payment-stage event was payment_error", async () => {
+    const run = await createRun();
+    const sessionId = freshSessionId();
+    const now = new Date("2026-01-01T00:02:00.000Z");
+    await createHeldSeat({
+      runId: run.id,
+      concertId: run.concertId,
+      sessionId,
+      expiresAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+    await recordJudgmentEvent(db, sessionId, {
+      type: "payment_error",
+      stage: "payment",
+      errorType: "timeout",
+      timestamp: now.toISOString(),
+    });
+
+    await releaseHold({ sessionId, runId: run.id, now });
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    const events = sessionResult.events as unknown as Array<{ type: string }>;
+    expect(events.filter((e) => e.type === "payment_abandoned")).toHaveLength(1);
+  });
+
+  it("does not record payment_abandoned when there was no prior payment_error", async () => {
+    const run = await createRun();
+    const sessionId = freshSessionId();
+    await createHeldSeat({
+      runId: run.id,
+      concertId: run.concertId,
+      sessionId,
+      expiresAt: new Date("2026-01-01T00:05:00.000Z"),
+    });
+
+    await releaseHold({ sessionId, runId: run.id, now: new Date() });
+
+    const sessionResult = await db.sessionResult.findUnique({ where: { sessionId } });
+    const events = (sessionResult?.events ?? []) as unknown as Array<{ type: string }>;
+    expect(events.some((e) => e.type === "payment_abandoned")).toBe(false);
   });
 });
