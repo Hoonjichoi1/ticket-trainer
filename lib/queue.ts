@@ -95,12 +95,20 @@ export async function joinQueue(params: {
       await recordStageEntered(tx, sessionId, "queue", now);
     }
 
+    // D-4: initial position is proportional to how many virtual users have
+    // arrived since the concert opened, not a fixed per-tier constant — so
+    // joining closer to the exact open moment gets a lower (better) starting
+    // position. QueueEntry.position is Int, so round the continuous
+    // arrivalRatePerSec * elapsedSeconds value.
+    const elapsedSinceOpen = computeElapsedTime({ since: run.concert.openAt, now });
+    const initialPosition = Math.round(config.arrivalRatePerSec * elapsedSinceOpen.seconds);
+
     return tx.queueEntry.create({
       data: {
         concertId: run.concertId,
         simulationRunId: runId,
         sessionId,
-        position: config.virtualQueueSize,
+        position: initialPosition,
         joinedAt: now,
       },
     });

@@ -152,7 +152,7 @@ model QueueEntry {
 model SimulationConfig {
   id                  String @id @default(uuid())
   tier                Tier   @unique
-  virtualQueueSize    Int
+  arrivalRatePerSec   Float
   admissionRatePerSec Float
   botIntensity        Float
   errorRate           Float

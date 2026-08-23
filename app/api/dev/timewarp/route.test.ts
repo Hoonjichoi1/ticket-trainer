@@ -162,8 +162,8 @@ describe("POST /api/dev/timewarp", () => {
 
   it("queueConsumedPct computes the rewind from admissionRatePerSec so pollQueue reads back ~that % consumed", async () => {
     const sessionId = await establishSession();
-    const run = await createActiveRun(sessionId, { tier: Tier.SMALL }); // admissionRatePerSec 5, virtualQueueSize 500
-    await joinQueueDirectly({ sessionId, runId: run.id, concertId: run.concertId, position: 500 });
+    const run = await createActiveRun(sessionId, { tier: Tier.SMALL }); // admissionRatePerSec 5
+    await joinQueueDirectly({ sessionId, runId: run.id, concertId: run.concertId, position: 500 }); // position set directly, bypassing joinQueue's arrivalRatePerSec derivation
 
     const res = await POST(jsonRequest({ queueConsumedPct: 90 }));
     expect(res.status).toBe(200);

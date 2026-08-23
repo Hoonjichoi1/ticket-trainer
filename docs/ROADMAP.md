@@ -38,11 +38,12 @@
 > Phase 1 착수 전이 아니라, 실제 구현·플레이 과정에서 발견되어 사후에 결정된 사항. 이미 완료·병합된 Task의 코드 수정을 동반하는 경우가 많으므로, 각 항목에 영향받는 Task를 명시하고 별도 수정 브랜치로 반영한다.
 
 - [x] **D-3. `seat_selection` stageTiming의 의미** (Phase 1 착수 전이 아니라 Task 009 구현 중 발견·결정된 사항): `enteredAt`은 좌석맵 최초 조회(`GET`) 시점, `exitedAt`은 클레임 성공(`POST`) 시점으로 기록 — Task 009 구현 중 변경, 원래 작업 문서(`tasks/009-seat-map-hold-atomicity.md`)는 "성공 시에만 `enteredAt`"이었음. 따라서 이 구간에는 **경합 재시도 시간이 포함됨** — Task 011에서 "빠를수록 좋음" 식 평가 로직을 짤 때 이 점 감안할 것.
-- [] **D-4. 대기열 초기 순번 산정 모델 변경** (Phase 3 진행 중 발견·결정 — Task 007/008 완료 후 수정 필요): 초기 순번이 티어별 고정값(`virtualQueueSize`)이라 "오픈 정각에 얼마나 빨리 눌렀는지"가 전혀 반영되지 않는 문제 발견 → **결정: 오픈 시각 이후 가상 유저 도착률에 비례한 동적 산정으로 변경**
+- [x] **D-4. 대기열 초기 순번 산정 모델 변경** (Phase 3 진행 중 발견·결정 — Task 007/008 완료 후 수정 필요): 초기 순번이 티어별 고정값(`virtualQueueSize`)이라 "오픈 정각에 얼마나 빨리 눌렀는지"가 전혀 반영되지 않는 문제 발견 → **결정: 오픈 시각 이후 가상 유저 도착률에 비례한 동적 산정으로 변경**
   - `SimulationConfig`에 `arrivalRatePerSec`(초당 가상 유저 유입 수) 필드 추가
   - 초기 순번 = `arrivalRatePerSec × (joinedAt - concert.openAt)`. 이후 감소는 기존 `admissionRatePerSec` 방식 유지
   - **부수 효과**: 대기열 경과시간이 봇 tick 계산과 같은 시간축을 공유하므로, 대기가 길수록 좌석 선택 진입 시 잔여 좌석이 자연히 줄어듦 (별도 로직 불필요)
   - **영향 범위**: Task 007(tick 계산 로직), Task 008(대기열 진입 API), `lib/types.ts`(`SimulationConfig` 타입) — 이미 완료·병합된 코드 수정 필요
+  - **구현 시 정정**: 실제로는 `lib/queue.ts`의 `joinQueue` 한 곳만 수정하면 됐다 — `lib/simulation.ts`/`lib/tick.ts`는 `initialPosition`을 불투명한 숫자로만 다뤄 전혀 손대지 않았고, `lib/types.ts`에는 애초에 `SimulationConfig`를 나타내는 손으로 작성한 타입이 없어 수정 대상이 아니었다(Prisma 생성 타입을 그대로 사용). `virtualQueueSize` 필드는 이 변경 후 앱 코드에서 완전히 죽은 필드가 되어 스키마에서 함께 제거했다. See: `tasks/011-queue-arrival-rate-position.md`
 - [] **D-5. Hold 만료 시 좌석 상태 복원 제거** (Phase 3 진행 중 발견·결정 — Task 007/009/010 완료 후 수정 필요): 5분 hold 만료 시 좌석을 `available`로 되돌리는 현재 동작이 비현실적(실제 취켓팅은 그렇게 빨리 안 풀림) → **결정: 세션 내 좌석 상태는 available → held → sold 단방향 전이만 허용, hold 만료로 인한 좌석 복원 로직 제거**
   - 유저 본인의 hold 타이머(5분 압박, F007)는 그대로 유지 — 결제 유도 긴장감 장치로 기능, 만료 시 좌석 복원 대신 F010 실패 결과로 종결
   - **영향 범위**: Task 007(hold 만료 판정 — "내 hold 유효성"만 체크로 축소), Task 009(hold 만료 lazy 처리), Task 010("새로고침/뒤로가기 → hold 상실 + 좌석 방출" 분기 — "좌석 방출" 제거하고 hold 상실만 기록) — 이미 완료·병합된 코드 수정 필요
