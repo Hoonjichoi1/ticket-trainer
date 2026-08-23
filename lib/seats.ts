@@ -59,38 +59,39 @@ export async function claimSeat(params: {
   });
 }
 
-export interface ReleaseExpiredHoldsResult {
-  releasedSeatIds: string[];
+export interface ExpireStaleHoldsResult {
+  expiredSeatIds: string[];
 }
 
 /**
- * Releases every expired active hold (releasedAt IS NULL, expiresAt < now)
- * for a run's seats: sets Hold.releasedAt and flips Seat.status back to
- * AVAILABLE in the same transaction (CLAUDE.md). Records a hold_expired
- * judgment event for user sessions only — the bot's synthetic sessionId
- * never gets a SessionResult row.
+ * Marks every expired active hold (releasedAt IS NULL, expiresAt < now) for
+ * a run's seats as no longer active (Hold.releasedAt = now) and records a
+ * hold_expired judgment event for user sessions — the bot's synthetic
+ * sessionId never gets a SessionResult row. Per ROADMAP D-5, Seat.status is
+ * a one-way AVAILABLE -> HELD -> SOLD transition: a hold expiring does NOT
+ * free the seat back up, it only ends that hold's own validity (checked by
+ * booking/payment to route the session to a failure outcome instead).
  */
-export async function releaseExpiredHolds(params: {
+export async function expireStaleHolds(params: {
   runId: string;
   now: Date;
-}): Promise<ReleaseExpiredHoldsResult> {
+}): Promise<ExpireStaleHoldsResult> {
   const { runId, now } = params;
 
   const activeHolds = await prisma.hold.findMany({
     where: { releasedAt: null, seat: { simulationRunId: runId } },
     select: { id: true, seatId: true, expiresAt: true, sessionId: true },
   });
-  if (activeHolds.length === 0) return { releasedSeatIds: [] };
+  if (activeHolds.length === 0) return { expiredSeatIds: [] };
 
   const { expired } = findExpiredHolds({ holds: activeHolds, now });
-  if (expired.length === 0) return { releasedSeatIds: [] };
+  if (expired.length === 0) return { expiredSeatIds: [] };
 
   const sessionIdByHoldId = new Map(activeHolds.map((hold) => [hold.id, hold.sessionId]));
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     for (const { holdId, seatId } of expired) {
       await tx.hold.update({ where: { id: holdId }, data: { releasedAt: now } });
-      await tx.seat.update({ where: { id: seatId }, data: { status: SeatStatus.AVAILABLE } });
 
       const sessionId = sessionIdByHoldId.get(holdId);
       if (sessionId && !isBotSession(sessionId)) {
@@ -104,7 +105,7 @@ export async function releaseExpiredHolds(params: {
     }
   });
 
-  return { releasedSeatIds: expired.map((e) => e.seatId) };
+  return { expiredSeatIds: expired.map((e) => e.seatId) };
 }
 
 /**
@@ -139,22 +140,22 @@ function shuffledCopy<T>(items: T[]): T[] {
 
 export interface SeatMapTickResult {
   botClaim: { claimCount: number };
-  releasedSeatIds: string[];
+  expiredSeatIds: string[];
 }
 
 /**
- * One GET /api/seats poll's worth of tick work, in order: (1) release any
- * expired holds so freed seats are eligible this tick, (2) advanceTick
- * (Task 007) against the now-current available count to get the bot's
- * claimCount, (3) execute that many real claimSeat() calls against random
- * available seats under the bot's sessionId. Each claim is independently
- * atomic, so a claim racing a concurrent user claim on the same seat is
- * safe — the loser just finds nothing left when its turn comes.
+ * One GET /api/seats poll's worth of tick work, in order: (1) mark any
+ * expired holds as no longer active (does NOT free their seats — D-5), (2)
+ * advanceTick (Task 007) against the current available count to get the
+ * bot's claimCount, (3) execute that many real claimSeat() calls against
+ * random available seats under the bot's sessionId. Each claim is
+ * independently atomic, so a claim racing a concurrent user claim on the
+ * same seat is safe — the loser just finds nothing left when its turn comes.
  */
 export async function runSeatMapTick(params: { runId: string; now: Date }): Promise<SeatMapTickResult> {
   const { runId, now } = params;
 
-  const released = await releaseExpiredHolds({ runId, now });
+  const expired = await expireStaleHolds({ runId, now });
 
   const availableSeatCount = await prisma.seat.count({
     where: { simulationRunId: runId, status: SeatStatus.AVAILABLE },
@@ -178,5 +179,5 @@ export async function runSeatMapTick(params: { runId: string; now: Date }): Prom
     }
   }
 
-  return { botClaim: tickResult.botClaim, releasedSeatIds: released.releasedSeatIds };
+  return { botClaim: tickResult.botClaim, expiredSeatIds: expired.expiredSeatIds };
 }

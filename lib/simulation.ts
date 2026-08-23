@@ -134,14 +134,17 @@ export interface ExpiredHold {
 }
 
 export interface HoldExpiryCheckResult {
-  /** holds whose expiresAt < now — candidates for lazy release by the caller's transaction */
+  /** holds whose expiresAt < now — candidates for the caller to mark releasedAt (does not free the seat, D-5) */
   expired: ExpiredHold[];
 }
 
 /**
  * Filters input.holds where expiresAt < now. Pure filter only — no DB
- * write. The caller executes the actual release transaction
- * (Hold.releasedAt set + Seat.status -> AVAILABLE) using this result.
+ * write. The caller records each expired hold as no longer active
+ * (Hold.releasedAt = now); per ROADMAP D-5, Seat.status is a one-way
+ * AVAILABLE -> HELD -> SOLD transition, so an expired hold does NOT flip
+ * its seat back to AVAILABLE. The same filter also serves a single hold's
+ * "is my hold still valid" check (call with a one-element `holds` array).
  */
 export function findExpiredHolds(
   input: HoldExpiryCheckInput,

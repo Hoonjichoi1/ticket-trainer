@@ -84,7 +84,7 @@ export type JudgmentEvent =
       type: "payment_retry_success";
       stage: "payment";
     })
-  // payment: error -> user refreshed/navigated away, hold lost, seat released
+  // payment: error -> user refreshed/navigated away, hold lost (seat status unaffected, D-5)
   | (JudgmentEventBase & {
       type: "payment_abandoned";
       stage: "payment";
