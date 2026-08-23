@@ -198,3 +198,44 @@ export interface ApiErrorResponse {
   code?: string;
   message: string;
 }
+
+// POST /api/dev/timewarp (ROADMAP D-7, dev/test-only — 404s in
+// production). Rewinds/advances the stored timestamp anchors
+// lib/simulation.ts's tick math reads from, so tick-on-request wait
+// states can be reproduced without waiting in real time. All fields
+// optional and combinable in one request.
+export interface TimewarpRequest {
+  /** Concert.openAt = now + openInMs. Positive = still-future open (e.g. 30_000 for "30s before open"); negative = already open. */
+  openInMs?: number;
+  /** QueueEntry.joinedAt = now - queueRewindMs. Mutually exclusive with queueConsumedPct. */
+  queueRewindMs?: number;
+  /** 0-100 convenience control: derives the joinedAt rewind from the tier's admissionRatePerSec so the queue position reads as this % consumed. */
+  queueConsumedPct?: number;
+  /** SimulationRun.lastTickAt = now - lastTickRewindMs. */
+  lastTickRewindMs?: number;
+}
+export interface TimewarpConcertResult {
+  applied: boolean;
+  openAt?: string;
+}
+export interface TimewarpQueueResult {
+  applied: boolean;
+  joinedAt?: string;
+  reason?: string;
+}
+export interface TimewarpSimulationRunResult {
+  applied: boolean;
+  lastTickAt?: string;
+}
+export interface TimewarpResponse {
+  status: "ok";
+  /** ISO 8601 — the `now` this call used as its reference point. */
+  now: string;
+  /** null when openInMs wasn't requested. */
+  concert: TimewarpConcertResult | null;
+  /** null when neither queueRewindMs nor queueConsumedPct was requested. */
+  queue: TimewarpQueueResult | null;
+  /** null when lastTickRewindMs wasn't requested. */
+  simulationRun: TimewarpSimulationRunResult | null;
+  warnings: string[];
+}

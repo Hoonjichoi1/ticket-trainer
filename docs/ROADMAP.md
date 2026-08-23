@@ -54,12 +54,13 @@
   - **영향 범위**: F006 문구("좌석 클릭 시" → "선택 완료 시"로 정정), Task 009 구현(hold 트랜잭션 호출 위치를 클릭 핸들러에서 confirm 핸들러로 이동), 관련 테스트 체크리스트(클릭 시 검증 → confirm 시 검증으로 케이스 재작성)
   - **D-3 연관 메모**: `seat_selection` stageTiming의 `exitedAt`(클레임 성공 시점)이 이제 confirm 클릭 시점과 일치하게 되어, D-3에서 우려했던 "경합 재시도 시간이 애매하게 섞이는" 문제가 오히려 명확해짐 — `enteredAt`(좌석맵 최초 조회)부터 `exitedAt`(confirm 성공)까지가 곧 "구역 훑어보기 + 좌석 고르기 + 재시도 전체" 구간이 되므로, D-3의 "빠를수록 좋음 평가 시 이 점 감안" 방향은 유지
   - See: `tasks/009-seat-map-hold-atomicity.md`의 "후속 변경 — ROADMAP D-6" 절
-- [ ] **D-7. 개발/테스트 전용 시간 가속 유틸 도입** (Phase 3 진행 중 발견, 미반영): D-4/D-6 등 tick-on-request 기반 변경 사항을 검증하려면 매번 실제 오픈 시각 + 실제 대기열 감소 시간을 기다려야 해 개발 사이클이 느려지는 문제 발견 → **결정: dev 환경 전용으로 시뮬레이션 시각 필드(`Concert.openAt`, `QueueEntry.joinedAt`, `SimulationRun.lastTickAt` 등)를 인위적으로 과거로 밀어넣는 유틸 추가**
+- [x] **D-7. 개발/테스트 전용 시간 가속 유틸 도입** (Phase 3 진행 중 발견): D-4/D-6 등 tick-on-request 기반 변경 사항을 검증하려면 매번 실제 오픈 시각 + 실제 대기열 감소 시간을 기다려야 해 개발 사이클이 느려지는 문제 발견 → **결정: dev 환경 전용으로 시뮬레이션 시각 필드(`Concert.openAt`, `QueueEntry.joinedAt`, `SimulationRun.lastTickAt` 등)를 인위적으로 과거로 밀어넣는 유틸 추가**
   - tick-on-request 패턴은 "경과 시간"이 전부 DB에 저장된 시각과 `now()`의 차이로 계산되므로, 저장된 시각 자체를 과거로 세팅하면 실제 대기 없이 "이미 오픈함"/"이미 순번 도달함" 상태를 즉시 재현 가능
   - 실제 tick 계산 로직(`lib/simulation.ts`)은 전혀 건드리지 않음 — 오직 검증용 입력값 세팅 수단만 추가
   - **프로덕션 격리 필수**: `NODE_ENV === 'production'`에서는 라우트/스크립트 자체가 존재하지 않거나 항상 404 응답. 실제 유저 세션은 이 경로를 절대 타지 않음
   - **영향 범위**: 신규 dev 전용 API 또는 CLI 스크립트 추가, Task 006(세션/인스턴스 생성)·007(tick 엔진) 관련 시각 필드를 대상으로 함. 기존 프로덕션 로직 변경 없음
   - **활용 목적**: D-4(대기열 도착 모델), D-6(hold 시점 변경) 등 향후 모든 tick 관련 변경의 수동 검증 시간을 단축
+  - **구현**: API 엔드포인트(`POST /api/dev/timewarp`)만 채택, CLI 스크립트는 도입하지 않음 — 브라우저 세션 쿠키를 그대로 재사용할 수 있고 이 저장소가 100% Route Handler 기반이라는 점을 근거로 판단. `openInMs`(부호로 양방향 표현)/`queueRewindMs`·`queueConsumedPct`(배타적)/`lastTickRewindMs` 세 필드를 한 요청에 조합 가능. See: `tasks/010-dev-timewarp-utility.md`
 ---
 
 ## 개발 워크플로우
