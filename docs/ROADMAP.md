@@ -63,6 +63,15 @@
   - **영향 범위**: 신규 dev 전용 API 또는 CLI 스크립트 추가, Task 006(세션/인스턴스 생성)·007(tick 엔진) 관련 시각 필드를 대상으로 함. 기존 프로덕션 로직 변경 없음
   - **활용 목적**: D-4(대기열 도착 모델), D-6(hold 시점 변경) 등 향후 모든 tick 관련 변경의 수동 검증 시간을 단축
   - **구현**: API 엔드포인트(`POST /api/dev/timewarp`)만 채택, CLI 스크립트는 도입하지 않음 — 브라우저 세션 쿠키를 그대로 재사용할 수 있고 이 저장소가 100% Route Handler 기반이라는 점을 근거로 판단. `openInMs`(부호로 양방향 표현)/`queueRewindMs`·`queueConsumedPct`(배타적)/`lastTickRewindMs` 세 필드를 한 요청에 조합 가능. See: `tasks/010-dev-timewarp-utility.md`
+- [x] **D-8. `SessionResult` 세션당 1개 + "다시 도전" 시 리셋** (Phase 3 진행 중 발견 — Task 011 설계 중 발견·결정): `SessionResult.sessionId`가 `@unique`라 세션 단위로만 유일한데, "다시 도전"으로 새 `SimulationRun`을 만들어도 이전 시도의 `stageTimings`/`contentionLosses`/`events`/`outcome`이 같은 row에 그대로 남아 다음 시도의 기록과 섞이는 문제 발견 → **결정: 스키마 변경(런 단위 스코프 키 추가) 대신, `POST /api/session`이 새 런을 생성하는 트랜잭션 안에서 해당 세션의 `SessionResult`를 초기화**(`stageTimings: {}`, `contentionLosses: 0`, `events: []`, `outcome: null`; row가 없으면 스킵)
+  - "최신 시도 결과만 남는다"는 처리는 현재 PRD 범위(기록 비교/랭킹은 v2 제외 항목)와 일치하므로, `SessionResult.simulationRunId` 추가 같은 스키마 확장은 채택하지 않음
+  - **영향 범위**: Task 006(`app/api/session/route.ts`) — 이미 완료·병합된 코드 수정 필요. Task 008~010의 `lib/session-result.ts` 쓰기 헬퍼 호출부는 변경 없음(신규 필드가 아니라 기존 필드 초기화 시점만 추가)
+  - **구현 시 정정**: 원안대로 `app/api/session/route.ts`의 새 런 생성 트랜잭션에 `resetSessionResult(tx, sessionId)` 호출만 추가하는 선에서 끝났다. 다만 구현 중 별개로, `aggregateSessionResult`(Task 011)의 `hasBooking` 판정이 `SessionResult`가 아니라 `Booking` 테이블을 직접 봐야 한다는 점에서 추가 함정을 발견했다 — `Booking`은 `simulationRunId`가 없고 D-8 리셋 대상도 아니어서(리셋은 `SessionResult`만), 옛 런에서 성공한 세션이 재도전하면 옛 `Booking`이 그대로 남는다. `sessionId`만으로 `hasBooking`을 조회하면 새 런이 아직 아무 것도 안 했는데 옛 성공 때문에 `SUCCESS`로 잘못 판정된다 — `Booking → Seat.simulationRunId`로 현재 런에 스코프해 조회하도록 구현해 회피했다(`lib/result.ts`).
+  - See: `tasks/012-result-report-feedback.md`
+- [x] **D-9. hold 상실 리다이렉트 목적지 `/seats` → `/result` 정정** (Phase 3 진행 중 발견 — Task 011 설계 중 발견·결정): PRD 예매정보/결제/결과 리포트 페이지 절("다음 이동: hold 만료 → 결과 리포트(실패)", "진입 경로: 결제 성공, hold 상실/만료, 세션 실패 확정 시 자동 이동")과 D-5("만료 시 좌석 복원 대신 F010 실패 결과로 **종결**")가 명시하는 hold 상실 시 목적지는 결과 리포트 페이지(`/result`, 실패)인데, Task 010 구현은 `/seats`로 되돌리고 있었음(재선택 기회를 주는 형태로 구현됨) → **결정: 서버 가드와 클라이언트 hold 타이머 만료 모두 `/result`로 정정**. 단, hold를 애초에 가진 적 없는 세션(직접 URL 접근 등)은 기존대로 `/seats`로 보냄 — `stageTimings.seat_selection.exitedAt` 존재 여부(한때 hold를 실제로 보유했는지)로 두 경우를 구분
+  - **영향 범위**: Task 010(`app/booking/page.tsx`, `app/payment/page.tsx`의 서버 가드, `app/booking/BookingView.tsx`, `app/payment/PaymentView.tsx`의 `HoldTimer onExpire`) — 이미 완료·병합된 코드 수정 필요
+  - **구현 시 정정**: 실제로는 `HoldTimer onExpire`뿐 아니라 `POST /api/booking`·`POST /api/payment`가 `hold_expired`를 응답으로 돌려주는 분기(제출 시점에 서버가 이미 만료를 감지한 경우)도 같은 이유로 `/result`로 보내야 했다 — 원안 영향 범위는 타이머 분기만 명시했으나 구현 중 두 응답 분기를 모두 정정했다. 서버 가드 쪽은 원안대로 `getOwnedHold`가 `null`일 때 `stageTimings.seat_selection.exitedAt` 존재 여부로 `/seats`(애초에 hold 없었음)와 `/result`(hold를 보유했다가 상실)를 구분했다. 실제 로컬 dev 서버에서 hold가 5분 자연 만료되는 것을 Playwright로 대화형 검증하는 과정에 우연히 재현되어(클라이언트 타이머 만료 → `/result` 자동 이동 → `SEAT_LOST` 정확히 표시, `SimulationRun.status` `COMPLETED` 전이 확인) 실 경로가 그대로 검증됐다.
+  - See: `tasks/012-result-report-feedback.md`
 ---
 
 ## 개발 워크플로우
@@ -234,7 +243,7 @@
     - 엣지: 만료된 hold로 결제 시도, 이미 sold된 좌석 결제, 결제 중 hold 만료
     - E2E (Playwright MCP): 정상 결제 성공 플로우, 에러 발생 후 재결제 성공, 새로고침 후 hold 상실 확인, hold 타이머 만료 시나리오
 
-- **Task 011: 결과 리포트 집계·피드백 API (F011)**
+- **Task 011: 결과 리포트 집계·피드백 API (F011)** ✅ - 완료 (See: `tasks/012-result-report-feedback.md` — 파일명은 012지만 ROADMAP 기준 Task 011. `QUEUE_TIMEOUT`은 이번 범위에서 제외, ROADMAP D-8/D-9 참조)
   - **선행 조건:** Task 006~010 — 타이밍·이벤트는 이미 각 Task에서 기록 완료 상태. 본 Task는 **집계와 매핑만** 수행 (앞 단계 코드 재수정 없음)
   - `SessionResult` 확정: 기록된 데이터로 outcome, `stageTimings`(단계별 소요 시간 JSON), `contentionLosses`, `events`(판단 이벤트 로그 JSON) 집계
   - **규칙 기반 피드백**: 판단 이벤트(에러 후 새로고침, 재시도 성공, hold 만료 등)를 정해진 코칭 문구에 매핑, 소요 시간·패배 횟수를 티어별 기준치와 비교

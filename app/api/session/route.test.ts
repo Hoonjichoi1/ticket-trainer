@@ -1,7 +1,8 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
-import { SimulationRunStatus, Tier } from "@/lib/types";
+import { SimulationRunStatus, SessionOutcome, Tier } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
+import { recordJudgmentEvent, recordStageEntered, incrementContentionLosses } from "@/lib/session-result";
 
 const store = new Map<string, { value: string }>();
 
@@ -18,6 +19,7 @@ const { POST } = await import("./route");
 
 const db = getTestDb();
 const createdRunIds: string[] = [];
+const createdSessionIds: string[] = [];
 
 function postSession(body: unknown) {
   return POST(
@@ -34,6 +36,10 @@ beforeEach(() => {
 });
 
 afterEach(async () => {
+  if (createdSessionIds.length > 0) {
+    await db.sessionResult.deleteMany({ where: { sessionId: { in: createdSessionIds } } });
+    createdSessionIds.length = 0;
+  }
   if (createdRunIds.length === 0) return;
   await db.seat.deleteMany({ where: { simulationRunId: { in: createdRunIds } } });
   await db.simulationRun.deleteMany({ where: { id: { in: createdRunIds } } });
@@ -115,6 +121,36 @@ describe("POST /api/session", () => {
     const secondRunSeats = await db.seat.count({ where: { simulationRunId: second.runId } });
     expect(firstRunSeats).toBe(200);
     expect(secondRunSeats).toBe(200);
+  });
+
+  it("resets SessionResult on restart (ROADMAP D-8): a prior attempt's stageTimings/events/contentionLosses/outcome don't bleed into the new run's report", async () => {
+    const first = await (await postSession({ tier: Tier.SMALL })).json();
+    createdRunIds.push(first.runId);
+
+    const firstRun = await db.simulationRun.findUniqueOrThrow({ where: { id: first.runId } });
+    const sessionId = firstRun.sessionId;
+    createdSessionIds.push(sessionId);
+
+    await recordStageEntered(db, sessionId, "queue", new Date("2026-01-01T00:00:00.000Z"));
+    await incrementContentionLosses(db, sessionId);
+    await recordJudgmentEvent(db, sessionId, {
+      type: "queue_reset",
+      stage: "queue",
+      timestamp: "2026-01-01T00:00:01.000Z",
+      positionBeforeReset: 10,
+    });
+    await db.sessionResult.update({ where: { sessionId }, data: { outcome: SessionOutcome.ABANDONED } });
+
+    const second = await (await postSession({ tier: Tier.SMALL })).json();
+    createdRunIds.push(second.runId);
+    const secondRun = await db.simulationRun.findUniqueOrThrow({ where: { id: second.runId } });
+    expect(secondRun.sessionId).toBe(sessionId); // same session, retry via cookie reuse
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    expect(sessionResult.outcome).toBeNull();
+    expect(sessionResult.contentionLosses).toBe(0);
+    expect(sessionResult.events).toEqual([]);
+    expect(sessionResult.stageTimings).toEqual({});
   });
 
   it("falls back to the seeded concert when concertId is omitted", async () => {

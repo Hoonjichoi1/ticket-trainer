@@ -1,6 +1,8 @@
-import { getDummySessionResult } from "@/lib/dummy-data";
+import { redirect } from "next/navigation";
+import { requireSession } from "@/lib/session";
+import { aggregateSessionResult } from "@/lib/result";
 import { SessionOutcome } from "@/lib/types";
-import type { FeedbackItem, SimulationStage, StageTimings } from "@/lib/types";
+import type { SimulationStage, StageTimings } from "@/lib/types";
 import { StepIndicator } from "@/app/components/StepIndicator";
 import { TryAgainButton } from "./TryAgainButton";
 
@@ -57,47 +59,6 @@ const OUTCOME_META: Record<
   },
 };
 
-const FAILURE_FEEDBACK: Record<
-  Exclude<SessionOutcome, typeof SessionOutcome.SUCCESS>,
-  FeedbackItem[]
-> = {
-  [SessionOutcome.QUEUE_TIMEOUT]: [
-    {
-      eventType: "queue_reset",
-      message:
-        "Refreshing the queue page resets your position — closing the tab or reloading mid-wait cost you your spot in this run.",
-    },
-  ],
-  [SessionOutcome.SEAT_LOST]: [
-    {
-      eventType: "hold_expired",
-      message:
-        "Your 5-minute hold ran out before you finished booking info and payment. Move faster through those steps once a seat is held.",
-    },
-  ],
-  [SessionOutcome.PAYMENT_FAILED]: [
-    {
-      eventType: "payment_abandoned",
-      message:
-        "After the payment error, refreshing or navigating away released your hold instead of retrying inside the payment modal.",
-    },
-  ],
-  [SessionOutcome.ABANDONED]: [
-    {
-      eventType: "payment_abandoned",
-      message:
-        "You left before finishing the flow. Next time, decide explicitly whether to retry or walk away rather than letting the hold expire passively.",
-    },
-  ],
-};
-
-function isSessionOutcome(value: string | undefined): value is SessionOutcome {
-  return (
-    typeof value === "string" &&
-    (Object.values(SessionOutcome) as string[]).includes(value)
-  );
-}
-
 function formatDuration(ms: number): string {
   const totalSeconds = Math.max(0, Math.round(ms / 1000));
   const minutes = Math.floor(totalSeconds / 60);
@@ -112,27 +73,26 @@ function totalDurationMs(stageTimings: StageTimings): number {
   );
 }
 
-interface ResultPageProps {
-  searchParams: Promise<{ outcome?: string }>;
-}
-
 /**
- * Fully server-rendered — the session result is dummy fixture data (Task
- * 005-1's sessionStorage state only covers the selected seat, not a full
- * result), so there's no client-only read that would hydration-mismatch.
- * `?outcome=` lets Task 005-8's E2E flow reach both a success and a
- * failure report without a real backend deciding the outcome yet.
+ * Task 011: fully server-rendered from real data — no more
+ * getDummySessionResult / ?outcome= override (Task 005-8's dummy demo
+ * path). aggregateSessionResult (lib/result.ts) is called directly, the
+ * same "Server Component calls a lib function, not its own API route"
+ * pattern app/booking|payment/page.tsx use. No session/result yet ->
+ * redirect home rather than render an empty report.
  */
-export default async function ResultPage({ searchParams }: ResultPageProps) {
-  const { outcome: outcomeParam } = await searchParams;
-  const outcome = isSessionOutcome(outcomeParam) ? outcomeParam : SessionOutcome.SUCCESS;
+export default async function ResultPage() {
+  const session = await requireSession();
+  if ("error" in session) {
+    redirect("/");
+  }
 
-  const result = getDummySessionResult(
-    outcome === SessionOutcome.SUCCESS
-      ? {}
-      : { outcome, feedback: FAILURE_FEEDBACK[outcome] },
-  );
-  const meta = OUTCOME_META[outcome];
+  const result = await aggregateSessionResult({ sessionId: session.sessionId, now: new Date() });
+  if (!result) {
+    redirect("/");
+  }
+
+  const meta = OUTCOME_META[result.outcome];
 
   return (
     <div className="mx-auto flex w-full max-w-2xl flex-1 flex-col gap-8 p-8">

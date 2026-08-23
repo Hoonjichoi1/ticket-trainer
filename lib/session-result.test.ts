@@ -5,7 +5,10 @@ import {
   recordStageExited,
   recordJudgmentEvent,
   incrementContentionLosses,
+  getSessionResultRow,
+  resetSessionResult,
 } from "@/lib/session-result";
+import { SessionOutcome } from "@/lib/types";
 import type { JudgmentEvent, StageTimings } from "@/lib/types";
 
 const db = getTestDb();
@@ -104,6 +107,61 @@ describe("recordJudgmentEvent", () => {
     expect(events).toHaveLength(2);
     expect(events[0]).toEqual(eventA);
     expect(events[1]).toEqual(eventB);
+  });
+});
+
+describe("getSessionResultRow", () => {
+  it("returns null when no row exists (and does not create one)", async () => {
+    const sessionId = freshSessionId();
+    const row = await getSessionResultRow(db, sessionId);
+    expect(row).toBeNull();
+    await expect(db.sessionResult.findUnique({ where: { sessionId } })).resolves.toBeNull();
+  });
+
+  it("returns the full row shape once one exists", async () => {
+    const sessionId = freshSessionId();
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    await recordStageEntered(db, sessionId, "queue", now);
+    await incrementContentionLosses(db, sessionId);
+    await recordJudgmentEvent(db, sessionId, {
+      type: "queue_reset",
+      stage: "queue",
+      timestamp: now.toISOString(),
+      positionBeforeReset: 10,
+    });
+
+    const row = await getSessionResultRow(db, sessionId);
+    expect(row?.outcome).toBeNull();
+    expect(row?.contentionLosses).toBe(1);
+    expect(row?.stageTimings.queue?.enteredAt).toBe(now.toISOString());
+    expect(row?.events).toHaveLength(1);
+  });
+});
+
+describe("resetSessionResult", () => {
+  it("is a no-op when no row exists yet", async () => {
+    const sessionId = freshSessionId();
+    await expect(resetSessionResult(db, sessionId)).resolves.toBeUndefined();
+    await expect(db.sessionResult.findUnique({ where: { sessionId } })).resolves.toBeNull();
+  });
+
+  it("clears outcome/stageTimings/contentionLosses/events on an existing row", async () => {
+    const sessionId = freshSessionId();
+    const now = new Date("2026-01-01T00:00:00.000Z");
+    await recordStageEntered(db, sessionId, "queue", now);
+    await incrementContentionLosses(db, sessionId);
+    await recordJudgmentEvent(db, sessionId, {
+      type: "queue_reset",
+      stage: "queue",
+      timestamp: now.toISOString(),
+      positionBeforeReset: 10,
+    });
+    await db.sessionResult.update({ where: { sessionId }, data: { outcome: SessionOutcome.ABANDONED } });
+
+    await resetSessionResult(db, sessionId);
+
+    const row = await getSessionResultRow(db, sessionId);
+    expect(row).toEqual({ outcome: null, stageTimings: {}, contentionLosses: 0, events: [] });
   });
 });
 

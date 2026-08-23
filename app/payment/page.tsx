@@ -3,10 +3,14 @@ import { prisma } from "@/lib/db";
 import { requireSession } from "@/lib/session";
 import { getActiveRun } from "@/lib/queue";
 import { expireStaleHolds, getOwnedHold } from "@/lib/seats";
-import { recordStageEntered } from "@/lib/session-result";
+import { getSessionResultRow, recordStageEntered } from "@/lib/session-result";
 import PaymentViewLoader from "./PaymentViewLoader";
 
-/** Same hold-ownership gate as app/booking/page.tsx, timing the "payment" stage instead of "booking_info". */
+/**
+ * Same hold-ownership gate as app/booking/page.tsx (see that file's
+ * comment for the /result vs /seats branch, ROADMAP D-9), timing the
+ * "payment" stage instead of "booking_info".
+ */
 export default async function PaymentPage() {
   const session = await requireSession();
   if ("error" in session) {
@@ -22,7 +26,8 @@ export default async function PaymentPage() {
   await expireStaleHolds({ runId: run.id, now });
   const hold = await getOwnedHold({ sessionId: session.sessionId, runId: run.id });
   if (!hold) {
-    redirect("/seats");
+    const resultRow = await getSessionResultRow(prisma, session.sessionId);
+    redirect(resultRow?.stageTimings.seat_selection?.exitedAt ? "/result" : "/seats");
   }
 
   await recordStageEntered(prisma, session.sessionId, "payment", now);

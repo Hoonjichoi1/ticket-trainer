@@ -62,7 +62,9 @@ export default function BookingView({ seat, holdExpiresAt }: BookingViewProps) {
       const json: SubmitBookingInfoResponse = await res.json();
 
       if (json.status === "hold_expired") {
-        router.push("/seats");
+        // ROADMAP D-9: hold loss is a terminal failure per PRD, not a
+        // reason to send the user back to pick a new seat.
+        router.push("/result");
         return;
       }
 
@@ -90,7 +92,7 @@ export default function BookingView({ seat, holdExpiresAt }: BookingViewProps) {
         </div>
         <div className="text-right">
           <p className="text-xs text-[var(--color-mute)]">Hold expires in</p>
-          <HoldTimer expiresAt={holdExpiresAtDate} onExpire={() => router.push("/seats")} />
+          <HoldTimer expiresAt={holdExpiresAtDate} onExpire={() => router.push("/result")} />
         </div>
       </div>
 

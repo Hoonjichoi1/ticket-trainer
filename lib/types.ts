@@ -97,9 +97,28 @@ export type JudgmentEvent =
       seatId: string;
     });
 
-export type JudgmentEventType = JudgmentEvent["type"];
-//= "queue_reset" | "contention_loss" | "seat_claim_success" | "payment_error" 
+// Task 011: FeedbackItem.eventType also needs to express two benchmark
+// evaluation results (total time / contention losses vs. the tier's
+// target) that are never recorded as JudgmentEvents — they're derived at
+// aggregation time by comparing already-recorded data against
+// TIER_BENCHMARKS (lib/result.ts), not something that "happened" at a
+// point in time the way queue_reset/hold_expired/etc. do. Widening
+// JudgmentEventType itself (rather than only FeedbackItem.eventType) keeps
+// a single type name for "any label a FeedbackItem can carry", while
+// JudgmentEvent stays a closed set of only real observed events — these
+// literals must never appear in a JudgmentEvent or SessionResult.events.
+// "no_recorded_activity" is the same idea applied to the ABANDONED outcome:
+// aggregateSessionResult attaches it only when no other FeedbackItem was
+// produced at all, so that outcome isn't the one case with zero coaching
+// copy on the result page.
+export type JudgmentEventType =
+  | JudgmentEvent["type"]
+  | "slow_total_time"
+  | "high_contention_losses"
+  | "no_recorded_activity";
+//= "queue_reset" | "contention_loss" | "seat_claim_success" | "payment_error"
 // | "payment_retry_success" | "payment_abandoned" | "hold_expired"
+// | "slow_total_time" | "high_contention_losses" | "no_recorded_activity"
 
 // ---------------------------------------------------------------------
 // API contracts — grouped per route. Request types describe JSON bodies;

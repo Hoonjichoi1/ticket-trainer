@@ -8,14 +8,10 @@
 import {
   SeatStatus,
   QueueEntryStatus,
-  SessionOutcome,
   Tier,
   type SeatMapResponse,
   type SeatSummary,
   type QueuePollResponse,
-  type SessionResultResponse,
-  type FeedbackItem,
-  type JudgmentEvent,
 } from "@/lib/types";
 
 // ---------------------------------------------------------------------
@@ -147,78 +143,4 @@ export function getDummyQueuePosition(
     status: QueueEntryStatus.WAITING,
     ...overrides,
   };
-}
-
-// ---------------------------------------------------------------------
-// Result report sample
-// ---------------------------------------------------------------------
-export function getDummySessionResult(
-  overrides: Partial<SessionResultResponse> = {},
-): SessionResultResponse {
-  const t0 = Date.now() - 6 * 60_000;
-  const mkTiming = (offsetMs: number, durationMs: number) => ({
-    enteredAt: new Date(t0 + offsetMs).toISOString(),
-    exitedAt: new Date(t0 + offsetMs + durationMs).toISOString(),
-    durationMs,
-  });
-
-  const events: JudgmentEvent[] = [
-    {
-      type: "queue_reset",
-      stage: "queue",
-      timestamp: new Date(t0 + 10_000).toISOString(),
-      positionBeforeReset: 340,
-    },
-    {
-      type: "contention_loss",
-      stage: "seat_selection",
-      timestamp: new Date(t0 + 95_000).toISOString(),
-      seatId: "C-4",
-    },
-    {
-      type: "seat_claim_success",
-      stage: "seat_selection",
-      timestamp: new Date(t0 + 100_000).toISOString(),
-      seatId: "C-5",
-    },
-    {
-      type: "payment_error",
-      stage: "payment",
-      timestamp: new Date(t0 + 300_000).toISOString(),
-      errorType: "timeout",
-    },
-    {
-      type: "payment_retry_success",
-      stage: "payment",
-      timestamp: new Date(t0 + 320_000).toISOString(),
-    },
-  ];
-
-  const feedback: FeedbackItem[] = [
-    {
-      eventType: "contention_loss",
-      message:
-        "A bot claimed seat C-4 just before you. Try scanning several seats instead of fixating on one.",
-    },
-    {
-      eventType: "payment_retry_success",
-      message:
-        "Your payment timed out once, but you retried before the hold expired — good recovery.",
-    },
-  ];
-
-  const base: SessionResultResponse = {
-    outcome: SessionOutcome.SUCCESS,
-    stageTimings: {
-      queue: mkTiming(0, 90_000),
-      seat_selection: mkTiming(90_000, 15_000),
-      booking_info: mkTiming(105_000, 60_000),
-      payment: mkTiming(165_000, 180_000),
-    },
-    contentionLosses: 1,
-    events,
-    feedback,
-  };
-
-  return { ...base, ...overrides };
 }

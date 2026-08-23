@@ -1,6 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getOrCreateSessionId } from "@/lib/session";
+import { resetSessionResult } from "@/lib/session-result";
 import {
   SimulationRunStatus,
   Tier,
@@ -67,6 +68,12 @@ export async function POST(request: NextRequest) {
       where: { sessionId, status: SimulationRunStatus.ACTIVE },
       data: { status: SimulationRunStatus.EXPIRED },
     });
+
+    // ROADMAP D-8: SessionResult is keyed by sessionId, not runId — reset
+    // it here so the previous attempt's stageTimings/events/outcome don't
+    // bleed into this new run's report (Task 011 is the first reader/
+    // writer of outcome; a no-op if this session has no row yet).
+    await resetSessionResult(tx, sessionId);
 
     const newRun = await tx.simulationRun.create({
       data: {
