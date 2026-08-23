@@ -150,20 +150,24 @@ export async function getOwnedHold(params: { sessionId: string; runId: string })
 }
 
 /**
- * Explicitly ends the session's active hold regardless of whether it has
- * expired yet (Task 010, F010 "새로고침·뒤로가기 → hold 상실"): sets
- * Hold.releasedAt in the same transaction as the judgment-event write.
- * Per ROADMAP D-5, this does NOT flip Seat.status back to AVAILABLE — the
- * seat stays claimed, and losing this hold is a terminal F010 failure
- * outcome, not a chance to free the seat back up (same rule as
- * expireStaleHolds). Records a payment_abandoned judgment event only when
- * this session's most recent payment-stage event was payment_error — i.e.
- * only when this release follows a failed payment attempt, not a plain
- * early exit from seats/booking (which has no dedicated judgment event;
- * the 5-minute expiry safety net covers that case via hold_expired).
- * Returns released:false as a no-op if there was nothing to release, so
- * the sendBeacon-driven caller can stay idempotent against
- * retries/duplicate unload events.
+ * Explicitly ends the session's active hold (Task 010, F010 "새로고침·뒤로가기
+ * → hold 상실"): sets Hold.releasedAt in the same transaction as the
+ * judgment-event write. Sweeps expired holds first, same as
+ * attemptPayment/confirmBookingInfo — getOwnedHold's contract requires it,
+ * and skipping it here would let an already-expired-but-unswept hold get
+ * misrecorded as a live release below instead of expireStaleHolds' own
+ * hold_expired event. Per ROADMAP D-5, this does NOT flip Seat.status back
+ * to AVAILABLE — the seat stays claimed, and losing this hold is a
+ * terminal F010 failure outcome, not a chance to free the seat back up
+ * (same rule as expireStaleHolds). Records a payment_abandoned judgment
+ * event only when this session's most recent payment-stage event was
+ * payment_error — i.e. only when this release follows a failed payment
+ * attempt, not a plain early exit from seats/booking (which has no
+ * dedicated judgment event; the 5-minute expiry safety net covers that
+ * case via hold_expired). Returns released:false as a no-op if there was
+ * nothing to release (already swept, or never held), so the
+ * sendBeacon-driven caller can stay idempotent against retries/duplicate
+ * unload events.
  */
 export async function releaseHold(params: {
   sessionId: string;
@@ -171,6 +175,8 @@ export async function releaseHold(params: {
   now: Date;
 }): Promise<{ released: boolean }> {
   const { sessionId, runId, now } = params;
+
+  await expireStaleHolds({ runId, now });
 
   const hold = await getOwnedHold({ sessionId, runId });
   if (!hold) return { released: false };

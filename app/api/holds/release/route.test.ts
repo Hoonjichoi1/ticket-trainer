@@ -1,6 +1,7 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
-import { Tier, SimulationRunStatus, SeatStatus } from "@/lib/types";
+import { Tier, SimulationRunStatus, SeatStatus, type JudgmentEvent } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
+import { recordJudgmentEvent } from "@/lib/session-result";
 
 const store = new Map<string, { value: string }>();
 
@@ -69,11 +70,15 @@ async function createActiveRun(sessionId: string) {
   return run;
 }
 
-async function createHeldSeat(sessionId: string, run: { id: string; concertId: string }) {
+async function createHeldSeat(
+  sessionId: string,
+  run: { id: string; concertId: string },
+  expiresAt: Date = new Date(Date.now() + 5 * 60_000),
+) {
   const seat = await db.seat.create({
     data: { concertId: run.concertId, simulationRunId: run.id, row: "A", number: 1, status: SeatStatus.HELD },
   });
-  await db.hold.create({ data: { seatId: seat.id, sessionId, expiresAt: new Date(Date.now() + 5 * 60_000) } });
+  await db.hold.create({ data: { seatId: seat.id, sessionId, expiresAt } });
   return seat;
 }
 
@@ -120,5 +125,54 @@ describe("POST /api/holds/release", () => {
     const res = await POST();
 
     expect(res.status).toBe(204);
+  });
+
+  // Regression for the bug where releaseHold skipped the expireStaleHolds
+  // sweep that getOwnedHold's contract requires callers to run first
+  // (unlike attemptPayment/confirmBookingInfo, which both sweep before
+  // reading the hold). Without the sweep, a hold that's already past its
+  // expiresAt but not yet marked releasedAt gets treated as a live
+  // session-initiated release instead of an expiry, so it wrongly records
+  // payment_abandoned (since the prior event was payment_error) instead of
+  // hold_expired.
+  it("releases an already-expired-but-unswept hold as hold_expired, not payment_abandoned", async () => {
+    const sessionId = await establishSession();
+    const run = await createActiveRun(sessionId);
+    const alreadyExpired = new Date(Date.now() - 1000);
+    await createHeldSeat(sessionId, run, alreadyExpired);
+    await recordJudgmentEvent(db, sessionId, {
+      type: "payment_error",
+      stage: "payment",
+      timestamp: new Date(Date.now() - 2000).toISOString(),
+      errorType: "server_error",
+    });
+
+    const res = await POST();
+    expect(res.status).toBe(204);
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    const events = sessionResult.events as unknown as JudgmentEvent[];
+    expect(events.some((event) => event.type === "hold_expired")).toBe(true);
+    expect(events.some((event) => event.type === "payment_abandoned")).toBe(false);
+  });
+
+  it("records payment_abandoned when a still-active hold is released right after a payment_error", async () => {
+    const sessionId = await establishSession();
+    const run = await createActiveRun(sessionId);
+    const stillValid = new Date(Date.now() + 5 * 60_000);
+    await createHeldSeat(sessionId, run, stillValid);
+    await recordJudgmentEvent(db, sessionId, {
+      type: "payment_error",
+      stage: "payment",
+      timestamp: new Date().toISOString(),
+      errorType: "server_error",
+    });
+
+    const res = await POST();
+    expect(res.status).toBe(204);
+
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    const events = sessionResult.events as unknown as JudgmentEvent[];
+    expect(events.some((event) => event.type === "payment_abandoned")).toBe(true);
   });
 });
