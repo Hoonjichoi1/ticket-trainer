@@ -3,7 +3,7 @@ import { Tier, SeatStatus } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
 import {
   claimSeat,
-  releaseExpiredHolds,
+  expireStaleHolds,
   listSeatMap,
   runSeatMapTick,
   seatBelongsToRun,
@@ -170,8 +170,8 @@ describe("claimSeat", () => {
   });
 });
 
-describe("releaseExpiredHolds", () => {
-  it("releases an expired hold: Seat back to AVAILABLE, Hold.releasedAt set", async () => {
+describe("expireStaleHolds", () => {
+  it("marks an expired hold as no longer active but leaves the seat HELD (D-5: seat status never reverts)", async () => {
     const run = await createRun();
     const now = new Date("2026-01-01T00:10:00.000Z");
     const { seat, hold } = await createHeldSeat({
@@ -181,11 +181,11 @@ describe("releaseExpiredHolds", () => {
       expiresAt: new Date(now.getTime() - 1000), // already expired
     });
 
-    const result = await releaseExpiredHolds({ runId: run.id, now });
+    const result = await expireStaleHolds({ runId: run.id, now });
 
-    expect(result.releasedSeatIds).toEqual([seat.id]);
+    expect(result.expiredSeatIds).toEqual([seat.id]);
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
-    expect(persistedSeat.status).toBe(SeatStatus.AVAILABLE);
+    expect(persistedSeat.status).toBe(SeatStatus.HELD);
     const persistedHold = await db.hold.findUniqueOrThrow({ where: { id: hold.id } });
     expect(persistedHold.releasedAt?.getTime()).toBe(now.getTime());
   });
@@ -200,9 +200,9 @@ describe("releaseExpiredHolds", () => {
       expiresAt: new Date(now.getTime() + 60_000), // not expired yet
     });
 
-    const result = await releaseExpiredHolds({ runId: run.id, now });
+    const result = await expireStaleHolds({ runId: run.id, now });
 
-    expect(result.releasedSeatIds).toEqual([]);
+    expect(result.expiredSeatIds).toEqual([]);
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
     expect(persistedSeat.status).toBe(SeatStatus.HELD);
     const persistedHold = await db.hold.findUniqueOrThrow({ where: { id: hold.id } });
@@ -220,7 +220,7 @@ describe("releaseExpiredHolds", () => {
       expiresAt: new Date(now.getTime() - 1000),
     });
 
-    await releaseExpiredHolds({ runId: run.id, now });
+    await expireStaleHolds({ runId: run.id, now });
 
     const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
     const events = sessionResult.events as unknown as Array<{ type: string; seatId?: string }>;
@@ -239,7 +239,7 @@ describe("releaseExpiredHolds", () => {
       expiresAt: new Date(now.getTime() - 1000),
     });
 
-    await releaseExpiredHolds({ runId: run.id, now });
+    await expireStaleHolds({ runId: run.id, now });
 
     const sessionResult = await db.sessionResult.findUnique({ where: { sessionId: botId } });
     expect(sessionResult).toBeNull();
@@ -298,27 +298,29 @@ describe("runSeatMapTick", () => {
     expect(hold.sessionId).toBe(botSessionId(run.id));
   });
 
-  it("releases expired holds before computing the bot claim, freeing that seat for the tick", async () => {
+  it("marks an expired hold's Hold row but does NOT free its seat for the bot to reclaim (D-5)", async () => {
     const t0 = new Date("2026-01-01T00:00:00.000Z");
     const run = await createRun({ tier: Tier.MEGA, lastTickAt: t0 }); // MEGA botIntensity 0.8
     const userSessionId = freshSessionId();
-    const { seat } = await createHeldSeat({
+    const { seat, hold } = await createHeldSeat({
       runId: run.id,
       concertId: run.concertId,
       sessionId: userSessionId,
       expiresAt: new Date(t0.getTime() - 1000), // already expired as of t0
     });
-    const now = new Date(t0.getTime() + 3_600_000); // huge elapsed -> claim capped at availableSeatCount
+    const now = new Date(t0.getTime() + 3_600_000); // huge elapsed, but no seats are AVAILABLE
 
     const result = await runSeatMapTick({ runId: run.id, now });
 
-    expect(result.releasedSeatIds).toEqual([seat.id]);
-    // Only seat in the run; it was freed by the release, then immediately reclaimed by the bot.
-    expect(result.botClaim.claimCount).toBe(1);
+    expect(result.expiredSeatIds).toEqual([seat.id]);
+    // Only seat in the run stays HELD by its original owner — no AVAILABLE
+    // seats exist for the bot to claim, regardless of elapsed time/intensity.
+    expect(result.botClaim.claimCount).toBe(0);
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
     expect(persistedSeat.status).toBe(SeatStatus.HELD);
-    const activeHold = await db.hold.findFirstOrThrow({ where: { seatId: seat.id, releasedAt: null } });
-    expect(activeHold.sessionId).toBe(botSessionId(run.id));
+    const persistedHold = await db.hold.findUniqueOrThrow({ where: { id: hold.id } });
+    expect(persistedHold.sessionId).toBe(userSessionId);
+    expect(persistedHold.releasedAt?.getTime()).toBe(now.getTime());
   });
 
   it("bot-vs-user contention: racing runSeatMapTick against a direct user claimSeat on the run's single seat, exactly one wins", async () => {
@@ -393,7 +395,7 @@ describe("getOwnedHold", () => {
 });
 
 describe("releaseHold", () => {
-  it("releases the session's active hold: Seat back to AVAILABLE, Hold.releasedAt set", async () => {
+  it("ends the session's active hold but leaves the seat HELD (D-5: no seat release), Hold.releasedAt set", async () => {
     const run = await createRun();
     const sessionId = freshSessionId();
     const now = new Date("2026-01-01T00:02:00.000Z");
@@ -408,7 +410,7 @@ describe("releaseHold", () => {
 
     expect(result).toEqual({ released: true });
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
-    expect(persistedSeat.status).toBe(SeatStatus.AVAILABLE);
+    expect(persistedSeat.status).toBe(SeatStatus.HELD);
     const persistedHold = await db.hold.findUniqueOrThrow({ where: { id: hold.id } });
     expect(persistedHold.releasedAt?.getTime()).toBe(now.getTime());
   });

@@ -95,7 +95,7 @@ describe("attemptPayment", () => {
 
     expect(result).toEqual({ status: "hold_expired" });
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
-    expect(persistedSeat.status).toBe(SeatStatus.AVAILABLE);
+    expect(persistedSeat.status).toBe(SeatStatus.HELD);
   });
 
   it("on injected failure: leaves Seat/Hold untouched, records payment_error", async () => {

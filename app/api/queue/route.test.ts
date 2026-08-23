@@ -49,7 +49,13 @@ async function establishSession(): Promise<string> {
   return sessionId;
 }
 
-async function createActiveRun(sessionId: string, openAt = new Date("2000-01-01T00:00:00.000Z")) {
+// Default openAt is ~100s before "now" (computed at call time, not a fixed
+// date) so the D-4 arrival-rate-derived initial position lands close to the
+// same round number (SMALL: 5/sec * 100s = 500) the old fixed
+// virtualQueueSize=500 gave — the route computes its own `now` a few ms
+// later than this default is evaluated, so assertions below tolerate that
+// small drift instead of asserting an exact value.
+async function createActiveRun(sessionId: string, openAt = new Date(Date.now() - 100_000)) {
   const concert = await db.concert.create({
     data: { title: "queue-route-test", venue: "test-venue", openAt },
   });
@@ -76,15 +82,37 @@ describe("POST /api/queue", () => {
     expect(json.code).toBe("NO_ACTIVE_RUN");
   });
 
-  it("joins the queue at the tier's virtualQueueSize", async () => {
+  it("joins the queue with a position derived from arrivalRatePerSec × elapsed time since open", async () => {
     const sessionId = await establishSession();
     await createActiveRun(sessionId);
 
     const res = await POST();
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.position).toBe(500); // SMALL tier virtualQueueSize
+    // ~100s since open * SMALL arrivalRatePerSec (5/sec) = ~500; tolerate a
+    // few ms of real-clock drift between the fixture's openAt and the
+    // route's own `new Date()`.
+    expect(json.position).toBeGreaterThanOrEqual(500);
+    expect(json.position).toBeLessThanOrEqual(501);
     expect(json.status).toBe("WAITING");
+  });
+
+  it("assigns a larger initial position the later the session joins after open (D-4)", async () => {
+    const earlySessionId = await establishSession();
+    await createActiveRun(earlySessionId, new Date(Date.now() - 5_000)); // 5s since open
+    const earlyRes = await POST();
+    const earlyJson = await earlyRes.json();
+
+    // establishSession() reuses an existing valid cookie rather than
+    // issuing a new one — clear the mocked cookie store first so this
+    // second call actually creates a distinct second session.
+    store.clear();
+    const lateSessionId = await establishSession();
+    await createActiveRun(lateSessionId, new Date(Date.now() - 300_000)); // 300s since open
+    const lateRes = await POST();
+    const lateJson = await lateRes.json();
+
+    expect(lateJson.position).toBeGreaterThan(earlyJson.position);
   });
 
   it("rejects joining before the concert's openAt (F002 server check)", async () => {
@@ -122,11 +150,12 @@ describe("GET /api/queue", () => {
     const res = await GET();
     expect(res.status).toBe(200);
     const json = await res.json();
-    // A few ms of real elapsed time pass between the POST and GET calls
-    // above, so the position decays very slightly below its 500 starting
-    // value (SMALL tier: 5/sec) rather than staying exactly 500.
-    expect(json.position).toBeLessThanOrEqual(500);
-    expect(json.position).toBeGreaterThan(499);
+    // Starting position is ~500 (D-4: arrivalRatePerSec 5/sec * ~100s since
+    // open). A few ms of real elapsed time pass between the POST and GET
+    // calls above, decaying it slightly further (admissionRatePerSec 5/sec)
+    // — tolerate both that decay and the join-time rounding drift.
+    expect(json.position).toBeLessThanOrEqual(501);
+    expect(json.position).toBeGreaterThan(498);
     expect(json.status).toBe("WAITING");
   });
 });

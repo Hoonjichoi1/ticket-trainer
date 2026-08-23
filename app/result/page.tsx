@@ -37,16 +37,16 @@ const OUTCOME_META: Record<
   },
   [SessionOutcome.SEAT_LOST]: {
     label: "Seat lost",
-    headline: "Your held seat was released",
+    headline: "Your hold expired",
     description:
-      "The 5-minute hold expired before you finished booking, and the seat went back on sale.",
+      "The 5-minute hold ran out before you finished booking, and the booking couldn't be completed.",
     isSuccess: false,
   },
   [SessionOutcome.PAYMENT_FAILED]: {
     label: "Payment failed",
     headline: "Payment didn't go through",
     description:
-      "A refresh or navigation away during a payment error released your hold instead of retrying it.",
+      "A refresh or navigation away during a payment error ended the booking instead of retrying it.",
     isSuccess: false,
   },
   [SessionOutcome.ABANDONED]: {

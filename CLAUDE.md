@@ -195,3 +195,10 @@ Booking ──→ Session
 3. **Sketch**: Route handler signature + request/response types
 4. **Implement**: Using deterministic tick for time-based logic
 5. **Test**: Against real database (test Neon instance or local Postgres)
+
+## Task 완료 보고 규격
+Task 완료 시 아래 4항목으로 보고한다 (리뷰 기준: docs/REVIEW.md):
+1. 이번 Task의 설계 결정 (선택지 + 채택 이유)
+2. 플랜에서 벗어난 부분 (deviation)
+3. 다음 Task로 미룬 것 (deferred)
+4. 스스로 리스크가 있다고 판단하는 지점

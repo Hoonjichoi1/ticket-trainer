@@ -9,7 +9,7 @@
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import { SeatStatus, type PaymentErrorType, type SubmitPaymentResponse } from "@/lib/types";
-import { getOwnedHold, releaseExpiredHolds } from "@/lib/seats";
+import { getOwnedHold, expireStaleHolds } from "@/lib/seats";
 import { recordStageExited, recordJudgmentEvent, getSessionEvents } from "@/lib/session-result";
 
 /** Pure decision: does this attempt get the tier's injected failure? Takes `roll` as a param (default Math.random()) so tests can assert both branches deterministically without mocking Math.random. */
@@ -59,7 +59,7 @@ export async function attemptPayment(params: {
   const roll = params.roll ?? Math.random();
   const errorTypeRoll = params.errorTypeRoll ?? Math.random();
 
-  await releaseExpiredHolds({ runId, now });
+  await expireStaleHolds({ runId, now });
   const hold = await getOwnedHold({ sessionId, runId });
   if (!hold) {
     return { status: "hold_expired" };

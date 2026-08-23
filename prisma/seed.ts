@@ -17,7 +17,11 @@ async function main() {
   const concert = await prisma.concert.create({
     data: {
       title: "Seed Concert: Sample Tour 2026",
-      openAt: new Date("2026-08-01T12:00:00Z"),
+      // Relative to seeding time (not a fixed past date) so re-seeding
+      // always produces a testable near-future open — with D-4's
+      // arrival-rate-based initial queue position, a stale far-past
+      // openAt would make the initial position astronomically large.
+      openAt: new Date(Date.now() + 5 * 60_000),
       venue: "Sample Arena",
     },
   });
@@ -47,12 +51,14 @@ async function main() {
   });
 
   // Tuning values are placeholders — PRD doesn't specify exact numbers;
-  // revisit during simulation-engine tuning (Task 007+).
+  // revisit during simulation-engine tuning (Task 007+). arrivalRatePerSec
+  // mirrors admissionRatePerSec per tier (ROADMAP D-4) purely for clean,
+  // predictable numbers during manual testing — not a real tuning claim.
   await prisma.simulationConfig.createMany({
     data: [
       {
         tier: Tier.SMALL,
-        virtualQueueSize: 500,
+        arrivalRatePerSec: 5,
         admissionRatePerSec: 5,
         botIntensity: 0.1,
         errorRate: 0.02,
@@ -60,7 +66,7 @@ async function main() {
       },
       {
         tier: Tier.MEDIUM,
-        virtualQueueSize: 5000,
+        arrivalRatePerSec: 20,
         admissionRatePerSec: 20,
         botIntensity: 0.4,
         errorRate: 0.05,
@@ -68,7 +74,7 @@ async function main() {
       },
       {
         tier: Tier.MEGA,
-        virtualQueueSize: 50000,
+        arrivalRatePerSec: 50,
         admissionRatePerSec: 50,
         botIntensity: 0.8,
         errorRate: 0.1,

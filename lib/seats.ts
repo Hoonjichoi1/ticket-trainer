@@ -59,38 +59,39 @@ export async function claimSeat(params: {
   });
 }
 
-export interface ReleaseExpiredHoldsResult {
-  releasedSeatIds: string[];
+export interface ExpireStaleHoldsResult {
+  expiredSeatIds: string[];
 }
 
 /**
- * Releases every expired active hold (releasedAt IS NULL, expiresAt < now)
- * for a run's seats: sets Hold.releasedAt and flips Seat.status back to
- * AVAILABLE in the same transaction (CLAUDE.md). Records a hold_expired
- * judgment event for user sessions only — the bot's synthetic sessionId
- * never gets a SessionResult row.
+ * Marks every expired active hold (releasedAt IS NULL, expiresAt < now) for
+ * a run's seats as no longer active (Hold.releasedAt = now) and records a
+ * hold_expired judgment event for user sessions — the bot's synthetic
+ * sessionId never gets a SessionResult row. Per ROADMAP D-5, Seat.status is
+ * a one-way AVAILABLE -> HELD -> SOLD transition: a hold expiring does NOT
+ * free the seat back up, it only ends that hold's own validity (checked by
+ * booking/payment to route the session to a failure outcome instead).
  */
-export async function releaseExpiredHolds(params: {
+export async function expireStaleHolds(params: {
   runId: string;
   now: Date;
-}): Promise<ReleaseExpiredHoldsResult> {
+}): Promise<ExpireStaleHoldsResult> {
   const { runId, now } = params;
 
   const activeHolds = await prisma.hold.findMany({
     where: { releasedAt: null, seat: { simulationRunId: runId } },
     select: { id: true, seatId: true, expiresAt: true, sessionId: true },
   });
-  if (activeHolds.length === 0) return { releasedSeatIds: [] };
+  if (activeHolds.length === 0) return { expiredSeatIds: [] };
 
   const { expired } = findExpiredHolds({ holds: activeHolds, now });
-  if (expired.length === 0) return { releasedSeatIds: [] };
+  if (expired.length === 0) return { expiredSeatIds: [] };
 
   const sessionIdByHoldId = new Map(activeHolds.map((hold) => [hold.id, hold.sessionId]));
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     for (const { holdId, seatId } of expired) {
       await tx.hold.update({ where: { id: holdId }, data: { releasedAt: now } });
-      await tx.seat.update({ where: { id: seatId }, data: { status: SeatStatus.AVAILABLE } });
 
       const sessionId = sessionIdByHoldId.get(holdId);
       if (sessionId && !isBotSession(sessionId)) {
@@ -104,7 +105,7 @@ export async function releaseExpiredHolds(params: {
     }
   });
 
-  return { releasedSeatIds: expired.map((e) => e.seatId) };
+  return { expiredSeatIds: expired.map((e) => e.seatId) };
 }
 
 /**
@@ -133,7 +134,7 @@ export interface OwnedHold {
  * this session holding right now" on the booking-info/payment pages.
  * Looked up by sessionId, not a client-supplied seatId, so there's
  * nothing for a caller to spoof. Callers are expected to run
- * releaseExpiredHolds({ runId, now }) first (GET /api/seats normally does
+ * expireStaleHolds({ runId, now }) first (GET /api/seats normally does
  * this via runSeatMapTick, but booking/payment aren't polled, so their
  * page/route guards call it directly) — this function itself does not
  * check expiresAt, it trusts releasedAt as already-current.
@@ -149,18 +150,20 @@ export async function getOwnedHold(params: { sessionId: string; runId: string })
 }
 
 /**
- * Explicitly releases the session's active hold regardless of whether it
- * has expired yet (Task 010, F010 "새로고침·뒤로가기 → hold 상실 + 좌석
- * 방출"): sets Hold.releasedAt and flips Seat.status back to AVAILABLE in
- * the same transaction, same pairing rule as releaseExpiredHolds. Records
- * a payment_abandoned judgment event only when this session's most recent
- * payment-stage event was payment_error — i.e. only when this release
- * follows a failed payment attempt, not a plain early exit from
- * seats/booking (which has no dedicated judgment event; the 5-minute
- * expiry safety net covers that case via hold_expired). Returns
- * released:false as a no-op if there was nothing to release, so the
- * sendBeacon-driven caller can stay idempotent against retries/duplicate
- * unload events.
+ * Explicitly ends the session's active hold regardless of whether it has
+ * expired yet (Task 010, F010 "새로고침·뒤로가기 → hold 상실"): sets
+ * Hold.releasedAt in the same transaction as the judgment-event write.
+ * Per ROADMAP D-5, this does NOT flip Seat.status back to AVAILABLE — the
+ * seat stays claimed, and losing this hold is a terminal F010 failure
+ * outcome, not a chance to free the seat back up (same rule as
+ * expireStaleHolds). Records a payment_abandoned judgment event only when
+ * this session's most recent payment-stage event was payment_error — i.e.
+ * only when this release follows a failed payment attempt, not a plain
+ * early exit from seats/booking (which has no dedicated judgment event;
+ * the 5-minute expiry safety net covers that case via hold_expired).
+ * Returns released:false as a no-op if there was nothing to release, so
+ * the sendBeacon-driven caller can stay idempotent against
+ * retries/duplicate unload events.
  */
 export async function releaseHold(params: {
   sessionId: string;
@@ -174,7 +177,6 @@ export async function releaseHold(params: {
 
   await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
     await tx.hold.update({ where: { id: hold.holdId }, data: { releasedAt: now } });
-    await tx.seat.update({ where: { id: hold.seatId }, data: { status: SeatStatus.AVAILABLE } });
 
     const events = await getSessionEvents(tx, sessionId);
     const lastPaymentEvent = [...events].reverse().find((event) => event.stage === "payment");
@@ -210,22 +212,22 @@ function shuffledCopy<T>(items: T[]): T[] {
 
 export interface SeatMapTickResult {
   botClaim: { claimCount: number };
-  releasedSeatIds: string[];
+  expiredSeatIds: string[];
 }
 
 /**
- *  tick work,One GET /api/seats poll's worth of in order: (1) release any
- * expired holds so freed seats are eligible this tick, (2) advanceTick
- * (Task 007) against the now-current available count to get the bot's
- * claimCount, (3) execute that many real claimSeat() calls against random
- * available seats under the bot's sessionId. Each claim is independently
- * atomic, so a claim racing a concurrent user claim on the same seat is
- * safe — the loser just finds nothing left when its turn comes.
+ * One GET /api/seats poll's worth of tick work, in order: (1) mark any
+ * expired holds as no longer active (does NOT free their seats — D-5), (2)
+ * advanceTick (Task 007) against the current available count to get the
+ * bot's claimCount, (3) execute that many real claimSeat() calls against
+ * random available seats under the bot's sessionId. Each claim is
+ * independently atomic, so a claim racing a concurrent user claim on the
+ * same seat is safe — the loser just finds nothing left when its turn comes.
  */
 export async function runSeatMapTick(params: { runId: string; now: Date }): Promise<SeatMapTickResult> {
   const { runId, now } = params;
 
-  const released = await releaseExpiredHolds({ runId, now });
+  const expired = await expireStaleHolds({ runId, now });
 
   const availableSeatCount = await prisma.seat.count({
     where: { simulationRunId: runId, status: SeatStatus.AVAILABLE },
@@ -249,5 +251,5 @@ export async function runSeatMapTick(params: { runId: string; now: Date }): Prom
     }
   }
 
-  return { botClaim: tickResult.botClaim, releasedSeatIds: released.releasedSeatIds };
+  return { botClaim: tickResult.botClaim, expiredSeatIds: expired.expiredSeatIds };
 }

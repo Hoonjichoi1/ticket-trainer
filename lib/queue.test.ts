@@ -24,12 +24,20 @@ afterEach(async () => {
   createdConcertIds.length = 0;
 });
 
+// Default openAt is 100s before the shared t0 (2026-01-01T00:00:00.000Z)
+// used across this file's tests. SMALL tier's arrivalRatePerSec is 5 (see
+// prisma/seed.ts), so joining at t0 with the default openAt yields
+// 5 * 100 = 500 — deliberately reproducing the same round number the old
+// fixed virtualQueueSize=500 gave, so existing assertions below don't need
+// to change value, only their derivation (ROADMAP D-4).
+const DEFAULT_TEST_OPEN_AT = new Date("2025-12-31T23:58:20.000Z");
+
 async function createRun(opts: { tier?: Tier; openAt?: Date } = {}) {
   const concert = await db.concert.create({
     data: {
       title: "queue-test-concert",
       venue: "queue-test-venue",
-      openAt: opts.openAt ?? new Date("2000-01-01T00:00:00.000Z"),
+      openAt: opts.openAt ?? DEFAULT_TEST_OPEN_AT,
     },
   });
   createdConcertIds.push(concert.id);
@@ -62,8 +70,8 @@ describe("getActiveRun", () => {
 });
 
 describe("joinQueue", () => {
-  it("creates a QueueEntry at the tier's virtualQueueSize and marks the queue stage entered", async () => {
-    const { run, sessionId } = await createRun(); // SMALL: virtualQueueSize 500
+  it("creates a QueueEntry with position derived from arrivalRatePerSec × elapsed time since open, and marks the queue stage entered", async () => {
+    const { run, sessionId } = await createRun(); // SMALL: arrivalRatePerSec 5/sec × 100s since open = 500
     const now = new Date("2026-01-01T00:00:00.000Z");
 
     const result = await joinQueue({ sessionId, runId: run.id, now });
@@ -92,15 +100,17 @@ describe("joinQueue", () => {
   });
 
   it("expires the previous WAITING entry on rejoin and records a queue_reset event with the decayed position", async () => {
-    const { run, sessionId } = await createRun(); // SMALL: rate 5/sec
-    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    const { run, sessionId } = await createRun(); // SMALL: arrivalRatePerSec 5/sec, admissionRatePerSec 5/sec
+    const t0 = new Date("2026-01-01T00:00:00.000Z"); // 100s since open -> first entry starts at 500
     const first = await joinQueue({ sessionId, runId: run.id, now: t0 });
     if (!first.ok) throw new Error("unreachable");
 
-    const t1 = new Date(t0.getTime() + 10_000); // 500 - 5*10 = 450 decayed position
+    const t1 = new Date(t0.getTime() + 10_000); // old entry: 500 - 5*10 = 450 decayed position
     const second = await joinQueue({ sessionId, runId: run.id, now: t1 });
     if (!second.ok) throw new Error("unreachable");
-    expect(second.snapshot.position).toBe(500);
+    // Rejoining later means more time has elapsed since open too — the new
+    // entry's own starting position reflects that: 110s since open * 5/sec = 550.
+    expect(second.snapshot.position).toBe(550);
 
     const entries = await db.queueEntry.findMany({
       where: { simulationRunId: run.id },
@@ -122,6 +132,44 @@ describe("joinQueue", () => {
 
     const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
     expect(sessionResult.events).toEqual([]);
+  });
+
+  // D-4: initial position now scales with how long the sale has been open
+  // at join time, instead of a fixed per-tier constant — these tests are
+  // the actual behavior change ROADMAP D-4 was written for.
+  it("assigns position ~0 when joining right at the exact open moment", async () => {
+    const openAt = new Date("2026-01-01T00:00:00.000Z");
+    const { run, sessionId } = await createRun({ openAt });
+
+    const result = await joinQueue({ sessionId, runId: run.id, now: openAt });
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) throw new Error("unreachable");
+    expect(result.snapshot.position).toBe(0);
+  });
+
+  it("assigns a larger initial position the later a session joins after open", async () => {
+    const openAt = new Date("2026-01-01T00:00:00.000Z");
+
+    const early = await createRun({ openAt });
+    const earlyResult = await joinQueue({
+      sessionId: early.sessionId,
+      runId: early.run.id,
+      now: new Date(openAt.getTime() + 5_000), // 5s after open
+    });
+
+    const late = await createRun({ openAt });
+    const lateResult = await joinQueue({
+      sessionId: late.sessionId,
+      runId: late.run.id,
+      now: new Date(openAt.getTime() + 300_000), // 300s after open
+    });
+
+    if (!earlyResult.ok || !lateResult.ok) throw new Error("unreachable");
+    // SMALL arrivalRatePerSec is 5/sec: 5s -> 25, 300s -> 1500.
+    expect(earlyResult.snapshot.position).toBe(25);
+    expect(lateResult.snapshot.position).toBe(1500);
+    expect(lateResult.snapshot.position).toBeGreaterThan(earlyResult.snapshot.position);
   });
 });
 
@@ -147,7 +195,7 @@ describe("pollQueue", () => {
   });
 
   it("admits and issues a token exactly once when position reaches 0, and keeps returning the same token", async () => {
-    const { run, sessionId } = await createRun(); // SMALL: virtualQueueSize 500, rate 5/sec -> 100s to admit
+    const { run, sessionId } = await createRun(); // SMALL: joins at position 500 (see DEFAULT_TEST_OPEN_AT), admissionRatePerSec 5/sec -> 100s to admit
     const t0 = new Date("2026-01-01T00:00:00.000Z");
     await joinQueue({ sessionId, runId: run.id, now: t0 });
 

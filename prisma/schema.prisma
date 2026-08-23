@@ -95,14 +95,14 @@ model Seat {
 // (`UNIQUE(seatId) WHERE expiresAt > now()`) cannot be created in
 // PostgreSQL — partial index predicates must be IMMUTABLE, and now() is
 // STABLE. releasedAt (nullable) replaces the time comparison: a hold is
-// "active" iff releasedAt IS NULL. releasedAt is set (in the same
-// transaction as the Seat.status flip back to AVAILABLE) when a hold is
-// explicitly released, converted to a Booking, or lazily expired by the
-// tick engine finding expiresAt < now(). expiresAt still drives the actual
-// TTL/lazy-expiry logic in application code. A seat can accumulate many
-// Hold rows over time (held, released, held again) — only one may be
-// active (releasedAt IS NULL) at a time, enforced by the partial unique
-// index below.
+// "active" iff releasedAt IS NULL. Per ROADMAP D-5, Seat.status is a
+// one-way AVAILABLE -> HELD -> SOLD transition: releasedAt marks that a
+// hold itself is no longer valid (e.g. lazily expired by the tick engine
+// finding expiresAt < now()), but it does NOT flip the seat's status back
+// to AVAILABLE — the seat stays claimed by whoever held it, expired or
+// not. expiresAt still drives the actual TTL/lazy-expiry logic in
+// application code; releasedAt lets booking/payment cheaply check "is my
+// hold still valid" and lets SessionResult record hold_expired once.
 model Hold {
   id         String    @id @default(uuid())
   seatId     String
@@ -152,7 +152,7 @@ model QueueEntry {
 model SimulationConfig {
   id                  String @id @default(uuid())
   tier                Tier   @unique
-  virtualQueueSize    Int
+  arrivalRatePerSec   Float
   admissionRatePerSec Float
   botIntensity        Float
   errorRate           Float

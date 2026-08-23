@@ -31,8 +31,38 @@
   - **MVP 권장안**: 세션별 독립 인스턴스(b) — 경합 상대는 봇으로 충분하고, 리셋이 단순하며 tick 결정론 검증도 쉬움. 실사용자 간 경합은 v2 스트레치로 이동
 - [x] **D-2. 티어 선택 값의 전달·저장 경로 결정**: 홈에서 선택한 티어(F001)를 세션에 저장할지, 대기열 진입 API 파라미터로 전달해 `QueueEntry`(또는 시뮬레이션 인스턴스)에 기록할지 결정 → **결정: 대기열 진입 API 파라미터로 전달**
   - **권장안**: 대기열 진입 시 파라미터로 받아 시뮬레이션 인스턴스/QueueEntry에 기록 — 세션 재사용 시 티어 변경이 자연스러움
-- [x] **D-3. `seat_selection` stageTiming의 의미** (Phase 1 착수 전이 아니라 Task 009 구현 중 발견·결정된 사항): `enteredAt`은 좌석맵 최초 조회(`GET`) 시점, `exitedAt`은 클레임 성공(`POST`) 시점으로 기록 — Task 009 구현 중 변경, 원래 작업 문서(`tasks/009-seat-map-hold-atomicity.md`)는 "성공 시에만 `enteredAt`"이었음. 따라서 이 구간에는 **경합 재시도 시간이 포함됨** — Task 011에서 "빠를수록 좋음" 식 평가 로직을 짤 때 이 점 감안할 것.
 
+
+---
+## 개발 중 발견된 설계 변경 사항 (Post-hoc Design Decisions)
+> Phase 1 착수 전이 아니라, 실제 구현·플레이 과정에서 발견되어 사후에 결정된 사항. 이미 완료·병합된 Task의 코드 수정을 동반하는 경우가 많으므로, 각 항목에 영향받는 Task를 명시하고 별도 수정 브랜치로 반영한다.
+
+- [x] **D-3. `seat_selection` stageTiming의 의미** (Phase 1 착수 전이 아니라 Task 009 구현 중 발견·결정된 사항): `enteredAt`은 좌석맵 최초 조회(`GET`) 시점, `exitedAt`은 클레임 성공(`POST`) 시점으로 기록 — Task 009 구현 중 변경, 원래 작업 문서(`tasks/009-seat-map-hold-atomicity.md`)는 "성공 시에만 `enteredAt`"이었음. 따라서 이 구간에는 **경합 재시도 시간이 포함됨** — Task 011에서 "빠를수록 좋음" 식 평가 로직을 짤 때 이 점 감안할 것.
+- [x] **D-4. 대기열 초기 순번 산정 모델 변경** (Phase 3 진행 중 발견·결정 — Task 007/008 완료 후 수정 필요): 초기 순번이 티어별 고정값(`virtualQueueSize`)이라 "오픈 정각에 얼마나 빨리 눌렀는지"가 전혀 반영되지 않는 문제 발견 → **결정: 오픈 시각 이후 가상 유저 도착률에 비례한 동적 산정으로 변경**
+  - `SimulationConfig`에 `arrivalRatePerSec`(초당 가상 유저 유입 수) 필드 추가
+  - 초기 순번 = `arrivalRatePerSec × (joinedAt - concert.openAt)`. 이후 감소는 기존 `admissionRatePerSec` 방식 유지
+  - **부수 효과**: 대기열 경과시간이 봇 tick 계산과 같은 시간축을 공유하므로, 대기가 길수록 좌석 선택 진입 시 잔여 좌석이 자연히 줄어듦 (별도 로직 불필요)
+  - **영향 범위**: Task 007(tick 계산 로직), Task 008(대기열 진입 API), `lib/types.ts`(`SimulationConfig` 타입) — 이미 완료·병합된 코드 수정 필요
+  - **구현 시 정정**: 실제로는 `lib/queue.ts`의 `joinQueue` 한 곳만 수정하면 됐다 — `lib/simulation.ts`/`lib/tick.ts`는 `initialPosition`을 불투명한 숫자로만 다뤄 전혀 손대지 않았고, `lib/types.ts`에는 애초에 `SimulationConfig`를 나타내는 손으로 작성한 타입이 없어 수정 대상이 아니었다(Prisma 생성 타입을 그대로 사용). `virtualQueueSize` 필드는 이 변경 후 앱 코드에서 완전히 죽은 필드가 되어 스키마에서 함께 제거했다. See: `tasks/011-queue-arrival-rate-position.md`
+- [x] **D-5. Hold 만료 시 좌석 상태 복원 제거** (Phase 3 진행 중 발견·결정 — Task 007/009/010 완료 후 수정 필요): 5분 hold 만료 시 좌석을 `available`로 되돌리는 현재 동작이 비현실적(실제 취켓팅은 그렇게 빨리 안 풀림) → **결정: 세션 내 좌석 상태는 available → held → sold 단방향 전이만 허용, hold 만료로 인한 좌석 복원 로직 제거**
+  - 유저 본인의 hold 타이머(5분 압박, F007)는 그대로 유지 — 결제 유도 긴장감 장치로 기능, 만료 시 좌석 복원 대신 F010 실패 결과로 종결
+  - **영향 범위**: Task 007(hold 만료 판정 — "내 hold 유효성"만 체크로 축소), Task 009(hold 만료 lazy 처리), Task 010("새로고침/뒤로가기 → hold 상실 + 좌석 방출" 분기 — "좌석 방출" 제거하고 hold 상실만 기록) — 이미 완료·병합된 코드 수정 필요
+  - **구현 시 정정**: 실제로 "이미 완료·병합된 코드" 수정이 필요했던 곳은 Task 009뿐이었다 — `lib/seats.ts`의 `releaseExpiredHolds`(만료 hold 발견 시 `Hold.releasedAt` 기록과 **같은 트랜잭션에서 `Seat.status → AVAILABLE`도 실행**하던 함수)에서 좌석 상태 되돌리기 라인만 제거하고 `expireStaleHolds`로 개명 — 더 이상 좌석을 "해제"하지 않으므로. `Hold.releasedAt`은 스키마·부분 유니크 제약 변경 없이 계속 "내 hold 유효성" 표시 용도로 재사용(booking/payment 단계 체크, 결과 리포트 `hold_expired` 이벤트 기록). Task 007(`lib/simulation.ts`의 `findExpiredHolds`)은 원래도 범용 순수 필터(`expiresAt < now`)라 로직 변경이 불필요했고, "caller가 Seat.status도 되돌린다"고 잘못 적힌 문서 주석만 정정했다. **Task 010은 애초에 미착수 상태**(`app/api/booking`·`app/api/payment` 모두 `not_implemented` 501 스텁, 새로고침/뒤로가기 hold 처리·`sendBeacon` 로직 전무)라 "이미 완료·병합된 코드"라는 전제 자체가 틀렸다 — 되돌릴 기존 코드가 없으므로 이번 수정 범위에서 제외했고, 추후 Task 010을 실제 구현할 때 "좌석 방출 없이 hold 상실만 기록"으로 처음부터 만들면 된다. 부수적으로 `prisma/schema.prisma` Hold 모델 주석, `lib/types.ts`의 `payment_abandoned` 이벤트 주석, `app/result/page.tsx`의 `SEAT_LOST`/`PAYMENT_FAILED` 더미 카피("seat went back on sale" 등)도 옛 동작을 전제로 하고 있어 함께 정정했다.
+- [x] **D-6. 좌석 hold 트랜잭션 발생 시점 변경** (Phase 3 진행 중 발견·결정 — Task 009 완료 후 수정 필요): 원래 스펙(F006, Task 009)은 "좌석 클릭 시 즉시 원자적 hold 시도"였으나, 실제 플레이 결과 봇에게 이미 선점된 좌석을 클릭했을 때 재선택이 막히는 문제 발견 → **결정: hold 트랜잭션은 클릭이 아닌 "좌석 선택 완료(confirm)" 시점에 실행**
+  - **좌석 클릭**: 순수 로컬 동작. 마지막 폴링 기준 `available`로 보이는 좌석만 `selected`로 표시. 이미 `held`/`sold`로 보이는 좌석 클릭 시 아무 반응 없음 (선택 자체가 안 됨)
+  - **confirm(좌석 선택 완료) 클릭**: 이 시점에 실제 원자적 `UPDATE seats SET status='held' WHERE id=$1 AND status='available' RETURNING id` 시도
+    - 성공 → 같은 트랜잭션에서 `Hold` 생성 → 예매정보 페이지로 이동
+    - 실패(그 사이 봇/타 세션이 선점) → "이미 선택된 좌석입니다" 안내 + 로컬 `selected` 초기화 → 새 좌석 재선택 필요 (좌석 선택 페이지에 남음)
+  - **영향 범위**: F006 문구("좌석 클릭 시" → "선택 완료 시"로 정정), Task 009 구현(hold 트랜잭션 호출 위치를 클릭 핸들러에서 confirm 핸들러로 이동), 관련 테스트 체크리스트(클릭 시 검증 → confirm 시 검증으로 케이스 재작성)
+  - **D-3 연관 메모**: `seat_selection` stageTiming의 `exitedAt`(클레임 성공 시점)이 이제 confirm 클릭 시점과 일치하게 되어, D-3에서 우려했던 "경합 재시도 시간이 애매하게 섞이는" 문제가 오히려 명확해짐 — `enteredAt`(좌석맵 최초 조회)부터 `exitedAt`(confirm 성공)까지가 곧 "구역 훑어보기 + 좌석 고르기 + 재시도 전체" 구간이 되므로, D-3의 "빠를수록 좋음 평가 시 이 점 감안" 방향은 유지
+  - See: `tasks/009-seat-map-hold-atomicity.md`의 "후속 변경 — ROADMAP D-6" 절
+- [x] **D-7. 개발/테스트 전용 시간 가속 유틸 도입** (Phase 3 진행 중 발견): D-4/D-6 등 tick-on-request 기반 변경 사항을 검증하려면 매번 실제 오픈 시각 + 실제 대기열 감소 시간을 기다려야 해 개발 사이클이 느려지는 문제 발견 → **결정: dev 환경 전용으로 시뮬레이션 시각 필드(`Concert.openAt`, `QueueEntry.joinedAt`, `SimulationRun.lastTickAt` 등)를 인위적으로 과거로 밀어넣는 유틸 추가**
+  - tick-on-request 패턴은 "경과 시간"이 전부 DB에 저장된 시각과 `now()`의 차이로 계산되므로, 저장된 시각 자체를 과거로 세팅하면 실제 대기 없이 "이미 오픈함"/"이미 순번 도달함" 상태를 즉시 재현 가능
+  - 실제 tick 계산 로직(`lib/simulation.ts`)은 전혀 건드리지 않음 — 오직 검증용 입력값 세팅 수단만 추가
+  - **프로덕션 격리 필수**: `NODE_ENV === 'production'`에서는 라우트/스크립트 자체가 존재하지 않거나 항상 404 응답. 실제 유저 세션은 이 경로를 절대 타지 않음
+  - **영향 범위**: 신규 dev 전용 API 또는 CLI 스크립트 추가, Task 006(세션/인스턴스 생성)·007(tick 엔진) 관련 시각 필드를 대상으로 함. 기존 프로덕션 로직 변경 없음
+  - **활용 목적**: D-4(대기열 도착 모델), D-6(hold 시점 변경) 등 향후 모든 tick 관련 변경의 수동 검증 시간을 단축
+  - **구현**: API 엔드포인트(`POST /api/dev/timewarp`)만 채택, CLI 스크립트는 도입하지 않음 — 브라우저 세션 쿠키를 그대로 재사용할 수 있고 이 저장소가 100% Route Handler 기반이라는 점을 근거로 판단. `openInMs`(부호로 양방향 표현)/`queueRewindMs`·`queueConsumedPct`(배타적)/`lastTickRewindMs` 세 필드를 한 요청에 조합 가능. See: `tasks/010-dev-timewarp-utility.md`
 ---
 
 ## 개발 워크플로우

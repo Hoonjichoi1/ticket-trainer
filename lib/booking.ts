@@ -1,13 +1,13 @@
 // Booking-info confirmation orchestration (Task 010) — the "caller" layer
 // for POST /api/booking. Sits between Task 009's hold ownership lookup
-// (lib/seats.ts's getOwnedHold/releaseExpiredHolds) and the observability
+// (lib/seats.ts's getOwnedHold/expireStaleHolds) and the observability
 // helpers (lib/session-result.ts). deliveryMethod/ticketCount aren't
 // persisted anywhere: the Booking model only gets a row on payment
 // success (lib/payment.ts), and PRD-wise this step is a UI flow gate
 // (terms agreed + a still-valid hold) rather than data the report needs.
 import { prisma } from "@/lib/db";
 import { recordStageExited } from "@/lib/session-result";
-import { getOwnedHold, releaseExpiredHolds } from "@/lib/seats";
+import { getOwnedHold, expireStaleHolds } from "@/lib/seats";
 import type { SubmitBookingInfoResponse } from "@/lib/types";
 
 /**
@@ -27,7 +27,7 @@ export async function confirmBookingInfo(params: {
 }): Promise<SubmitBookingInfoResponse> {
   const { sessionId, runId, now } = params;
 
-  await releaseExpiredHolds({ runId, now });
+  await expireStaleHolds({ runId, now });
   const hold = await getOwnedHold({ sessionId, runId });
   if (!hold) {
     return { status: "hold_expired" };

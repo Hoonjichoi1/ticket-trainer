@@ -97,7 +97,7 @@ describe("POST /api/holds/release", () => {
     expect(res.status).toBe(204);
   });
 
-  it("releases the session's held seat back to AVAILABLE", async () => {
+  it("ends the session's hold but leaves the seat HELD (D-5: no seat release)", async () => {
     const sessionId = await establishSession();
     const run = await createActiveRun(sessionId);
     const seat = await createHeldSeat(sessionId, run);
@@ -106,7 +106,7 @@ describe("POST /api/holds/release", () => {
 
     expect(res.status).toBe(204);
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
-    expect(persistedSeat.status).toBe(SeatStatus.AVAILABLE);
+    expect(persistedSeat.status).toBe(SeatStatus.HELD);
     const hold = await db.hold.findFirstOrThrow({ where: { seatId: seat.id } });
     expect(hold.releasedAt).not.toBeNull();
   });

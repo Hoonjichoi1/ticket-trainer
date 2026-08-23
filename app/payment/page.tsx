@@ -2,7 +2,7 @@ import { redirect } from "next/navigation";
 import { prisma } from "@/lib/db";
 import { requireSession } from "@/lib/session";
 import { getActiveRun } from "@/lib/queue";
-import { releaseExpiredHolds, getOwnedHold } from "@/lib/seats";
+import { expireStaleHolds, getOwnedHold } from "@/lib/seats";
 import { recordStageEntered } from "@/lib/session-result";
 import PaymentViewLoader from "./PaymentViewLoader";
 
@@ -19,7 +19,7 @@ export default async function PaymentPage() {
   }
 
   const now = new Date();
-  await releaseExpiredHolds({ runId: run.id, now });
+  await expireStaleHolds({ runId: run.id, now });
   const hold = await getOwnedHold({ sessionId: session.sessionId, runId: run.id });
   if (!hold) {
     redirect("/seats");

@@ -102,6 +102,6 @@ describe("confirmBookingInfo", () => {
 
     expect(result).toEqual({ status: "hold_expired" });
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
-    expect(persistedSeat.status).toBe(SeatStatus.AVAILABLE);
+    expect(persistedSeat.status).toBe(SeatStatus.HELD);
   });
 });

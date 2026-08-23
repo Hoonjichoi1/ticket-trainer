@@ -42,6 +42,13 @@ Task는 hold 확보까지만 다룬다.
   그 자리에서 `POST /api/seats`를 호출한다. 성공하면 선택 상태 표시 + hold 타이머 시작, 충돌(`SEAT_ALREADY_TAKEN`)이면
   "이미 선택된 좌석입니다" 배너를 띄우고 좌석맵을 즉시 재조회한다. **"좌석 선택 완료" 버튼은 이미 확보된 hold를 갖고
   `/booking`으로 이동만** 한다(재요청 없음) — 클레임은 클릭 시점에 이미 끝나 있어야 한다는 뜻.
+  > **[ROADMAP D-6로 이 문단 전체가 뒤집힘]** 실제 플레이 중 봇에게 이미 선점된 좌석을 클릭했을 때 재선택이
+  > 매끄럽지 않은 문제가 발견되어, 클레임 시점을 클릭에서 confirm으로 이동했다: **좌석 클릭은 순수 로컬 선택
+  > 표시만** 하고(서버 요청 없음), **`POST /api/seats` 호출은 "좌석 선택 완료" 버튼(confirm)을 눌렀을 때**
+  > 실행한다. confirm이 conflict를 받으면 배너 표시 + 로컬 선택 초기화 + 좌석맵 재조회로 사용자가 페이지에
+  > 남아 바로 다른 좌석을 재선택할 수 있게 한다. `POST /api/seats`의 원자적 클레임 트랜잭션 자체(`lib/seats.ts`
+  > `claimSeat`)는 호출 시점과 무관하게 그대로 재사용된다. 상세: `docs/ROADMAP.md`의 D-6, 구현은
+  > `app/seats/SeatsView.tsx`.
 - **관측 데이터 기록** — Task 008이 만든 `lib/session-result.ts` 헬퍼를 재사용하되, `contentionLosses` 증가 헬퍼가 아직
   없어 `incrementContentionLosses(db, sessionId)`를 신규 추가한다. `POST /api/seats` 충돌 시 `contention_loss` 이벤트
   기록 + `contentionLosses` 증가를 함께 실행하고, 성공 시 `seat_claim_success` 이벤트 + (해당 세션의 첫 진입이면)
@@ -153,10 +160,14 @@ Task는 hold 확보까지만 다룬다.
 
 ### E2E 검증 (Playwright MCP, 실제 dev 서버 대화형 구동 — Task 006/007/008과 동일하게 커밋되는 스펙 파일 없음)
 
-- [x] 좌석 클릭 → 즉시 선점 성공 피드백(hold 타이머 시작) 확인
-- [x] 이미 선점된 좌석(다른 세션/봇) 클릭 시 "이미 선택된 좌석입니다" 충돌 피드백 + 좌석맵 즉시 갱신 확인
+- [x] ~~좌석 클릭 → 즉시 선점 성공 피드백(hold 타이머 시작) 확인~~ → **ROADMAP D-6 반영, 재작성**: 좌석 클릭은
+      네트워크 요청 없이 로컬 선택 표시만 되는지 확인
+- [x] ~~이미 선점된 좌석(다른 세션/봇) 클릭 시 "이미 선택된 좌석입니다" 충돌 피드백 + 좌석맵 즉시 갱신 확인~~ →
+      **재작성**: "좌석 선택 완료" confirm 시 이미 선점된 좌석이면 충돌 피드백 + 로컬 선택 초기화 + 좌석맵 즉시
+      갱신 + 재선택 가능 확인 (자동화 테스트: `app/seats/SeatsView.test.tsx`)
 - [x] 봇이 실시간으로(2초 폴링 사이) 좌석을 가져가는 것을 좌석맵 갱신으로 관찰
-- [x] "좌석 선택 완료" 버튼 클릭 시 재요청 없이 `/booking`으로 이동
+- [x] ~~"좌석 선택 완료" 버튼 클릭 시 재요청 없이 `/booking`으로 이동~~ → **재작성**: "좌석 선택 완료" 버튼 클릭
+      시에만 `POST /api/seats`가 나가고, 선점 성공 시 `/booking`으로 이동하는 것 확인
 - [x] hold 5분 만료 후(또는 짧은 만료값으로 재현) 좌석이 다시 `AVAILABLE`로 돌아오는 것 확인
 
 ## 변경 사항 요약
@@ -170,3 +181,26 @@ Task는 hold 확보까지만 다룬다.
 - **`lib/session-storage.ts`의 `SelectedSeatStorage`에 실제 `holdExpiresAt` 추가**: `app/booking/BookingView.tsx`가 이 값을 실제로 읽어 쓰도록 바꾸는 것은 계획대로 **Task 010 범위로 남겨뒀다** — 지금은 값을 나란히 저장만 해 두어 다음 Task가 재작업 없이 바로 쓸 수 있게 했다(`BookingView`는 여전히 `selectedAt + 하드코딩 5분`으로 자체 계산 중).
 - **검증**: `npx tsc --noEmit`, `npm run lint` 모두 통과. `npx vitest run` **96 tests / 10 files** 전부 통과(`lib/seats.test.ts` 16건 — 동시성·봇-유저 경합 케이스 포함, `app/api/seats/route.test.ts` 11건 — 가드/충돌/이벤트 기록 검증 포함, `lib/session-result.test.ts`에 `incrementContentionLosses` 2건 추가, 기존 파일들). 동시성 테스트는 5회 연속 재실행해도 안정적으로 통과함을 확인. Playwright(Chrome MCP)로 실제 dev 서버를 구동해 홈 → 세션 시작 → 대기열 → 좌석 페이지 전체 플로우를 검증: 좌석 클릭 즉시 클레임 + hold 타이머, 봇이 실시간으로 좌석을 가져가는 것(DB 조회로 `bot:{runId}` 세션의 지속적 클레임 확인), "완료" 버튼이 재요청 없이 `/booking`으로 이동(네트워크 로그로 추가 POST 없음 확인), hold 만료 후 좌석이 실제로 `AVAILABLE`로 복귀, `SessionResult`에 각 이벤트·`contentionLosses`가 정확히 기록되는 것을 DB 조회로 확인. 다만 "충돌 배너"가 뜨는 정확한 순간을 물리적 클릭으로 재현하는 데는 실패했다 — 2초 폴링이 매우 안정적으로 빠르게 동작해서 좌석을 가로챈 뒤 클릭하기 전에 매번 폴링이 먼저 상태를 반영해버렸다(4회 시도, 매번 폴링이 이김). 대신 실제 브라우저 세션 쿠키로 `POST /api/seats`를 직접 호출해 서버가 실제로 conflict를 반환하는 것은 라이브로 확인했고, 클라이언트의 배너 렌더링 자체는 자동화 테스트(DB 검증 포함)로 커버된다.
 - **다음 Task 인계 사항**: (1) Task 010은 `lib/session-storage.ts`의 `holdExpiresAt`을 바로 읽어 `BookingView`/`PaymentView`의 하드코딩된 5분 타이머 계산을 서버 발급 값으로 교체할 수 있다. (2) `lib/seats.ts`의 `claimSeat`/`seatBelongsToRun`은 Task 010의 결제 성공 트랜잭션(`Seat.status → SOLD` + `Booking` 생성)에서도 그대로 재사용 가능한 패턴이다. (3) D-3(ROADMAP)에 기록된 `seat_selection` 구간의 의미(경합 재시도 시간 포함)를 Task 011 피드백 로직 설계 시 참고할 것.
+
+## 후속 변경 — ROADMAP D-6 (Phase 3 진행 중, Task 009 완료 후 반영)
+
+실제 플레이 중 봇에게 이미 선점된 좌석을 클릭했을 때 재선택이 매끄럽지 않은 문제가 발견되어,
+위 "클릭 즉시 클레임" 설계를 뒤집었다. 상세 결정 내용은 `docs/ROADMAP.md`의 D-6 참고.
+
+- **`app/seats/SeatsView.tsx`**: `handleSeatClick`에서 `POST /api/seats` 호출을 제거하고 순수 로컬
+  `setSelection({ seatId })`만 남김. `handleConfirm`을 async로 바꿔 `POST /api/seats` 호출 +
+  성공/충돌 처리(성공 → `saveSelectedSeat` + `/booking` 이동, 충돌 → 배너 + 로컬 선택 초기화 +
+  좌석맵 재조회)를 여기로 이동. `Selection` 타입에서 `holdExpiresAt` 제거(confirm 이전엔 실제
+  hold가 없음), 좌석맵 화면의 `HoldTimer` 블록도 제거(실제 hold는 confirm 성공 즉시 `/booking`
+  으로 넘어가므로 이 페이지에 카운트다운이 있을 이유가 없음).
+- **API/트랜잭션 레이어(`app/api/seats/route.ts`, `lib/seats.ts`)는 변경 없음** — `POST
+  /api/seats`의 원자적 클레임(`claimSeat`)은 호출 시점과 무관하게 이미 올바르게 설계돼 있었다.
+- **신규 자동화 테스트**: 그동안 이 프로젝트에 없었던 컴포넌트 테스트 인프라(`@testing-library/react`,
+  `@testing-library/user-event`, `@testing-library/jest-dom`)를 devDependency로 추가하고
+  `app/seats/SeatsView.test.tsx`를 신규 작성 — 이번 D-6의 동기가 된 버그 시나리오(좌석 클릭은
+  로컬 전용, confirm 시 conflict를 받으면 로컬 선택이 초기화되어 즉시 다른 좌석을 재선택할 수
+  있음)를 직접 검증한다. `fetch`/`next/navigation`의 `useRouter`를 모킹해 클릭 시점에 어떤
+  네트워크 요청도 나가지 않음을 확인하고, confirm 충돌 후 재선택·재confirm까지 전체 흐름을
+  한 테스트로 검증한다.
+- **검증**: `npx tsc --noEmit`, `npm run lint`, `npx vitest run`(97 tests / 11 files, 기존 96건 +
+  신규 컴포넌트 테스트 1건) 모두 통과.
