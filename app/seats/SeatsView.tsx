@@ -18,7 +18,6 @@ import {
 import { SeatCell } from "@/app/components/SeatCell";
 import { StepIndicator } from "@/app/components/StepIndicator";
 import { WarningBanner } from "@/app/components/WarningBanner";
-import { HoldTimer } from "@/app/components/HoldTimer";
 import { saveSelectedSeat } from "@/lib/session-storage";
 
 type View = "zone" | "seatmap";
@@ -28,7 +27,6 @@ const POLL_INTERVAL_MS = 2000;
 
 interface Selection {
   seatId: string;
-  holdExpiresAt: string;
 }
 
 function chunkIntoRows(seats: SeatSummary[]): SeatSummary[][] {
@@ -40,12 +38,15 @@ function chunkIntoRows(seats: SeatSummary[]): SeatSummary[][] {
 }
 
 /**
- * Real seat map (Task 009): polls GET /api/seats every 2s (tick-on-request
- * — each poll runs the server's expired-hold release + bot claim before
- * returning the map, per CLAUDE.md's polling interval guidance) and
- * claims a seat the instant it's clicked via POST /api/seats (PRD F006:
- * "좌석 클릭 → 선점 성공/실패 즉시 피드백"). "Confirm Seat Selection" only
- * navigates on an already-held seat — it never re-requests a claim.
+ * Real seat map (Task 009, refactored per ROADMAP D-6): polls GET
+ * /api/seats every 2s (tick-on-request — each poll runs the server's
+ * expired-hold release + bot claim before returning the map, per
+ * CLAUDE.md's polling interval guidance). Clicking a seat is a purely
+ * local selection — the real atomic claim (POST /api/seats, PRD F006)
+ * only fires when "Confirm Seat Selection" is pressed. A conflict there
+ * (another session/bot already took the seat) clears the local selection
+ * and re-fetches the map so the user can immediately pick a different
+ * seat instead of getting stuck.
  */
 export default function SeatsView() {
   const router = useRouter();
@@ -53,9 +54,10 @@ export default function SeatsView() {
   const [view, setView] = useState<View>("zone");
   const [activeZone, setActiveZone] = useState<SeatZone | null>(null);
   const [selection, setSelection] = useState<Selection | null>(null);
+  const [confirming, setConfirming] = useState(false);
   const [conflictMessage, setConflictMessage] = useState<string | null>(null);
   const [errorMessage, setErrorMessage] = useState<string | null>(null);
-  const claimingRef = useRef(false);
+  const confirmingRef = useRef(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -104,18 +106,24 @@ export default function SeatsView() {
     setActiveZone(null);
   }
 
-  async function handleSeatClick(seatId: string) {
-    // Ticket count is fixed at 1 (PRD F013) — once a claim succeeds, further
-    // clicks are ignored until this page navigates away.
-    if (selection || claimingRef.current) return;
-    claimingRef.current = true;
+  function handleSeatClick(seatId: string) {
+    // Purely local UI state — no request is sent, so clicking any
+    // available seat immediately replaces the current selection.
+    // SeatCell already prevents clicks on non-available seats.
     setConflictMessage(null);
+    setSelection({ seatId });
+  }
+
+  async function handleConfirm() {
+    if (!activeZone || !selection || !seats || confirmingRef.current) return;
+    confirmingRef.current = true;
+    setConfirming(true);
 
     try {
       const res = await fetch("/api/seats", {
         method: "POST",
         headers: { "content-type": "application/json" },
-        body: JSON.stringify({ seatId }),
+        body: JSON.stringify({ seatId: selection.seatId }),
       });
 
       if (!res.ok) {
@@ -126,29 +134,29 @@ export default function SeatsView() {
 
       const result = (await res.json()) as SeatClaimResponse;
       if (result.status === "held") {
-        setSelection({ seatId, holdExpiresAt: result.holdExpiresAt });
-      } else {
-        setConflictMessage("That seat was just taken — pick another one.");
-        // Reflect the loss immediately instead of waiting for the next poll.
-        const res2 = await fetch("/api/seats");
-        if (res2.ok) {
-          const body = (await res2.json()) as SeatMapResponse;
-          setSeats(body.seats);
-        }
+        const seat = seats.find((s) => s.id === selection.seatId);
+        if (!seat) return;
+        saveSelectedSeat(seat, result.holdExpiresAt);
+        router.push("/booking");
+        return;
+      }
+
+      setConflictMessage("That seat was just taken — pick another one.");
+      // The seat we tried is no longer ours to hold — drop the local
+      // selection so the user can immediately pick a different seat
+      // instead of being stuck on one the map will now show as taken.
+      setSelection(null);
+      const res2 = await fetch("/api/seats");
+      if (res2.ok) {
+        const body = (await res2.json()) as SeatMapResponse;
+        setSeats(body.seats);
       }
     } catch {
       setErrorMessage("Connection lost. Please try again.");
     } finally {
-      claimingRef.current = false;
+      confirmingRef.current = false;
+      setConfirming(false);
     }
-  }
-
-  function handleConfirm() {
-    if (!activeZone || !selection || !seats) return;
-    const seat = seats.find((s) => s.id === selection.seatId);
-    if (!seat) return;
-    saveSelectedSeat(seat, selection.holdExpiresAt);
-    router.push("/booking");
   }
 
   if (errorMessage) {
@@ -196,10 +204,9 @@ export default function SeatsView() {
           {conflictMessage && <WarningBanner tone="danger" message={conflictMessage} />}
 
           {selection && (
-            <div className="flex flex-col items-center gap-1 text-center">
-              <span className="text-sm text-[var(--color-mute)]">Seat held — complete checkout before it expires</span>
-              <HoldTimer expiresAt={new Date(selection.holdExpiresAt)} />
-            </div>
+            <p className="text-center text-sm text-[var(--color-mute)]">
+              Seat selected — press &quot;Confirm Seat Selection&quot; to hold it
+            </p>
           )}
 
           <div className="flex flex-col items-center gap-2">
@@ -223,10 +230,10 @@ export default function SeatsView() {
           <button
             type="button"
             onClick={handleConfirm}
-            disabled={!selection}
+            disabled={!selection || confirming}
             className="self-center rounded-full bg-[var(--color-brand)] px-6 py-3 font-semibold text-white transition-opacity disabled:cursor-not-allowed disabled:opacity-40"
           >
-            Confirm Seat Selection
+            {confirming ? "Confirming…" : "Confirm Seat Selection"}
           </button>
         </div>
       )}
