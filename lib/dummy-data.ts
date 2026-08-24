@@ -14,33 +14,6 @@ import {
   type QueuePollResponse,
 } from "@/lib/types";
 
-// ---------------------------------------------------------------------
-// Dummy concert — no Concert API response type exists yet in
-// lib/types.ts (that lands with the backend in Phase 3), so this is a
-// minimal local shape mirroring prisma Concert (id/title/venue/openAt).
-// ---------------------------------------------------------------------
-export interface DummyConcert {
-  id: string;
-  title: string;
-  venue: string;
-  /** ISO 8601 — ticket sale open time. */
-  openAt: string;
-}
-
-/**
- * openInMs is relative to call time (not a fixed literal date) so the
- * home page's countdown-to-open transition is always demoable regardless
- * of what day this runs.
- */
-export function getDummyConcert(openInMs = 60_000): DummyConcert {
-  return {
-    id: "dummy-concert-1",
-    title: "NEBULA LIVE 2026",
-    venue: "Olympic Hall, Seoul",
-    openAt: new Date(Date.now() + openInMs).toISOString(),
-  };
-}
-
 /**
  * Tier display labels — Tier has no display-name column in the DB
  * schema, and Korean tier names (소/중/메가) can't be used per CLAUDE.md's

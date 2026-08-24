@@ -31,16 +31,20 @@ export function QueuePoller() {
     async function tick() {
       try {
         const res = await fetch("/api/queue", { method: hasJoinedRef.current ? "GET" : "POST" });
-        hasJoinedRef.current = true;
 
         if (cancelled) return;
 
         if (!res.ok) {
+          // D-12: only a successful join means "already in the queue" — a
+          // failed POST (e.g. SALE_NOT_OPEN) must keep retrying with POST,
+          // not switch to GET (which 404s with no queue entry and
+          // overwrites this response's real error with a misleading one).
           const body = (await res.json()) as ApiErrorResponse;
           setErrorMessage(body.message);
           return;
         }
 
+        hasJoinedRef.current = true;
         const body = (await res.json()) as QueuePollResponse;
         setSnapshot(body);
         setErrorMessage(null);
