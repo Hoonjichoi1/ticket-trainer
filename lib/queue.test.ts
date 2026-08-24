@@ -134,6 +134,37 @@ describe("joinQueue", () => {
     expect(sessionResult.events).toEqual([]);
   });
 
+  it("serializes two concurrent joins for the same session+run into exactly one active entry (D-13)", async () => {
+    // Reproduces the race found live via Playwright: React Strict Mode's
+    // dev double-effect-invoke (and, in production, the same session open
+    // in two tabs) can fire two joinQueue calls before either commits.
+    // Without the FOR UPDATE lock on SimulationRun, both would read "no
+    // previous WAITING entry" and insert, leaving two WAITING rows for one
+    // session with no queue_reset recorded for either.
+    const { run, sessionId } = await createRun();
+    const now = new Date("2026-01-01T00:00:00.000Z");
+
+    const [first, second] = await Promise.all([
+      joinQueue({ sessionId, runId: run.id, now }),
+      joinQueue({ sessionId, runId: run.id, now }),
+    ]);
+
+    expect(first.ok).toBe(true);
+    expect(second.ok).toBe(true);
+
+    const entries = await db.queueEntry.findMany({ where: { simulationRunId: run.id } });
+    expect(entries).toHaveLength(2);
+    const active = entries.filter((e) => e.status !== QueueEntryStatus.EXPIRED);
+    expect(active).toHaveLength(1);
+
+    // The lock serialized them into the same "rejoin" path a real
+    // sequential rejoin takes — one queue_reset event, not silent data loss.
+    const sessionResult = await db.sessionResult.findUniqueOrThrow({ where: { sessionId } });
+    const events = sessionResult.events as unknown as Array<{ type: string }>;
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({ type: "queue_reset" });
+  });
+
   // D-4: initial position now scales with how long the sale has been open
   // at join time, instead of a fixed per-tier constant — these tests are
   // the actual behavior change ROADMAP D-4 was written for.

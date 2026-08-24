@@ -72,6 +72,15 @@ export async function joinQueue(params: {
   const config = await prisma.simulationConfig.findUniqueOrThrow({ where: { tier: run.tier } });
 
   const entry = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    // D-13: without this lock, two joinQueue calls for the same run (React
+    // Strict Mode's dev double-effect-invoke, or two tabs on the same
+    // session) can both read "no previous WAITING entry" under READ
+    // COMMITTED before either commits its insert, creating two WAITING
+    // rows for one session. A run has exactly one sessionId (schema), so
+    // locking the run row serializes this the same way pollQueue's
+    // `FOR UPDATE` on QueueEntry serializes concurrent admission polls.
+    await tx.$queryRaw`SELECT id FROM "SimulationRun" WHERE id = ${runId} FOR UPDATE`;
+
     const previous = await tx.queueEntry.findFirst({
       where: { sessionId, simulationRunId: runId, status: QueueEntryStatus.WAITING },
     });

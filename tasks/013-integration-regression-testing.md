@@ -128,10 +128,31 @@ Phase 3 기능 작업(Task 006~011)이 모두 완료되어 MVP 핵심 플로우(
 ### E2E 검증 (Playwright MCP, 실제 dev 서버 대화형 구동 — Task 006~012와 동일하게 커밋되는 스펙
 파일 없음)
 
-- [ ] 전체 플로우 × 3티어(SMALL → MEDIUM → MEGA): 홈 → 대기열 → 토큰 → 구역 → 좌석 선점(confirm)
-      → 예매정보 → 결제(정상 성공) → 결과 → 다시 도전, 매 단계 관측 데이터 대조
-- [ ] 봇·사용자 좌석 경합 라이브 관찰(MEGA 티어, timewarp로 가속) + `contention_loss` 리포트 반영
-      확인
+- [x] 전체 플로우 × 3티어(SMALL → MEDIUM → MEGA): 홈 → 대기열 → 토큰 → 구역 → 좌석 선점(confirm)
+      → 예매정보 → 결제(정상 성공) → 결과 → 다시 도전, 매 단계 관측 데이터 대조 — SMALL 진행 중 D-13
+      발견(아래 "변경 사항 요약" 참조), 승인 후 즉시 수정·회귀 테스트 추가 후 재개. 3개 티어 모두
+      Booking confirmed(`outcome: SUCCESS`)까지 정상 도달, `stageTimings` 각 단계 duration 합이
+      리포트의 total time과 정확히 일치, 결제 성공 모달의 confirmation ID가 DB `Booking.id`와
+      정확히 일치함을 확인(SMALL 2m26s/MEDIUM 0m53s/MEGA 0m59s, 3건 모두). "다시 도전"으로 홈까지
+      정상 순환. 대기열 진입 단계마다 React Strict Mode(dev)의 poll effect 이중 실행으로 `POST
+      /api/queue`가 두 번 발생해 `queue_reset` 이벤트가 1건씩 기록되고 Feedback에 "You refreshed
+      the queue 1 time(s)" 문구가 뜸 — 이는 D-13 락이 "직렬화"만 할 뿐 "병합"은 하지 않아 두 번째
+      요청이 Task 008 때부터 있던 기존 rejoin 로직(이전 entry 있으면 만료+`queue_reset`)을 정상적으로
+      타는 것으로, D-13의 사각지대가 아니라 의도된 동작(D-13 승인 요청 시 명시). dev 전용인 건 **이번
+      트리거**(Strict Mode)뿐이고 **queue_reset 기록 자체는 프로덕션에서도 동일 세션 두 탭 등으로
+      재현 가능한 정상 동작**이라 "프로덕션 빌드에서는 발생하지 않음"이라는 앞선 서술은 트리거와 결과를
+      혼동한 부정확한 표현이었음(사용자 지적으로 정정). `npm run build && npm run start`로 프로덕션
+      빌드 단일 탭 흐름을 실측 검증 — `POST /api/queue` 정확히 1회만 발생, `SessionResult.events`
+      빈 배열(`[]`) 확인(추정이 아닌 실측)
+- [x] 봇·사용자 좌석 경합 라이브 관찰(MEGA 티어, timewarp로 가속) + `contention_loss` 리포트 반영
+      확인 — 좌석 로컬 선택(D-6) 후 확정 전에 `/api/dev/timewarp`(`lastTickRewindMs: 3600000`)로
+      다음 tick의 경과 시간을 크게 늘려 봇이 사실상 전체 가용 좌석(200석)을 한 번에 채가도록
+      만들고, 그 상태에서 선택했던 좌석을 Confirm — 서버가 정확히 `conflict`를 반환해 "That seat
+      was just taken — pick another one." 배너가 뜨는 걸 라이브로 확인. 이 런은 그 tick으로 200석이
+      전부 소진돼 이후 예매 불가 상태가 됐고, `/result` 접근 시 `outcome: ABANDONED`("Session
+      abandoned")로 정확히 분류됨 — Contention losses "1" 표시, Feedback에 해당 문구, DB
+      `SessionResult.events`에 `contention_loss`(해당 seatId·timestamp 일치) 1건, `contentionLosses:
+      1` 모두 화면과 정확히 일치함을 DB 대조로 확인
 - [ ] 동시성 — 다중 세션 동일 좌석 경합 UI 레벨 보조 확인
 - [x] 오픈 전 대기열 진입 시도 → 403 — D-11 수정 후 재검증(Playwright, `/api/dev/timewarp`로 `Concert.openAt`을 미래로 이동): 홈페이지가 실제 `openAt` 기준 "Sale opens in 00:59:53"을 표시했고, `POST /api/queue`도 403 `SALE_NOT_OPEN`으로 정확히 거부됨. 재검증 중 발견된 `QueuePoller` 별개 버그는 사용자 승인 후 D-12로 수정 완료 — 아래 "변경 사항 요약" 참조
 - [ ] 토큰 없이 `/seats` 직접 접근 → 리다이렉트/403
@@ -147,3 +168,5 @@ Phase 3 기능 작업(Task 006~011)이 모두 완료되어 MVP 핵심 플로우(
 > 작업 완료 후 작성.
 
 **진행 중 발견 → 승인 후 수정 완료**: D-11 재검증 중 `app/queue/QueuePoller.tsx`에서 별개의 버그 발견 — 첫 `POST /api/queue`가 `SALE_NOT_OPEN`(403)으로 실패해도 `hasJoinedRef.current`가 무조건 `true`로 세팅되어, 2초 뒤 재시도가 `GET`으로 바뀌고 그 `GET`은 큐 엔트리가 없어 404(`Not currently in the queue. Call POST /api/queue first.`)를 반환한다. 그 결과 화면 메시지가 올바른 "Ticket sale has not opened yet."에서 잘못된 메시지로 덮어써진다. 이 Task의 진행 원칙(발견 시 즉시 고치지 않고 D-log 포맷으로 보고 후 승인 대기)에 따라 보고 후 사용자 승인을 받아 D-12로 수정·회귀 테스트 추가 완료 — 자세한 내용은 `docs/ROADMAP.md` D-12 참조.
+
+**진행 중 발견 → 승인 후 수정 완료 (2)**: "전체 플로우 × 3티어" SMALL 진행 중, `/queue` 진입 시 `POST /api/queue`가 거의 동시에 두 번 발생해 세션 하나에 `QueueEntry`가 2개(둘 다 `WAITING`) 생기는 걸 발견 — `joinQueue`(`lib/queue.ts`)의 "이전 entry 조회 → 만료 → 신규 생성"이 원자적이지 않아 두 트랜잭션이 서로의 커밋 전 insert를 못 보는 TOCTOU 경쟁 상태였다(React Strict Mode의 dev effect 이중 실행으로 재현됐지만, 근본 원인은 서버 쪽이라 프로덕션에서도 동일 세션 두 탭이면 재현 가능). 사용자 승인을 받아 D-13으로 수정(hold 로직과 동일한 이중 방어: `SimulationRun` row `FOR UPDATE` 잠금 + `QueueEntry` 부분 유니크 인덱스 백스톱) 및 회귀 테스트 추가 완료 — 자세한 내용은 `docs/ROADMAP.md` D-13 참조. SMALL 티어 나머지 단계(좌석 선점→예매정보→결제→결과→다시 도전)부터 재개.

@@ -147,6 +147,10 @@ model QueueEntry {
 
   @@index([concertId, sessionId])
   @@index([simulationRunId])
+  // D-13 backstop (same role as Hold's hold_seat_active_unique): a run has
+  // exactly one sessionId, so this caps it at one non-EXPIRED entry even if
+  // joinQueue's FOR UPDATE lock is ever bypassed by a future code change.
+  @@unique([simulationRunId], where: raw("status != 'EXPIRED'"), map: "queue_entry_active_unique")
 }
 
 model SimulationConfig {
