@@ -7,8 +7,8 @@
 
 ## 상태
 
-- [ ] 진행 중
-- [ ] 완료 — See: `docs/ROADMAP.md` Task 011-1 항목 업데이트
+- [x] 진행 중
+- [x] 완료 — See: `docs/ROADMAP.md` Task 011-1 항목 업데이트
 
 ## 개요
 
@@ -63,17 +63,18 @@ Phase 3 기능 작업(Task 006~011)이 모두 완료되어 MVP 핵심 플로우(
 
 ## 수락 기준
 
-- [ ] 전체 플로우(홈 티어 선택 → 대기열 → 토큰 → 구역 선택 → 좌석 선점 → 예매정보 → 결제 → 결과 →
+- [x] 전체 플로우(홈 티어 선택 → 대기열 → 토큰 → 구역 선택 → 좌석 선점 → 예매정보 → 결제 → 결과 →
       다시 도전)가 소/중/메가 3개 티어 모두에서 정상 동작 확인
-- [ ] 봇·사용자 좌석 경합이 실제로 관찰되고, tick 엔진이 결정론적으로 동작함(`lastTickAt` 이중 전진
-      없음) 확인
-- [ ] 동시성/경쟁 조건(다중 세션 동일 좌석 경합) 테스트 통과 — 정확히 한쪽만 성공
-- [ ] 에러 핸들링·엣지 케이스 6항목(오픈 전 대기열 진입/토큰 없이 좌석 접근/만료 hold로 결제/결제
+- [x] 봇·사용자 좌석 경합이 실제로 관찰되고, tick 엔진이 결정론적으로 동작함(`lastTickAt` 이중 전진
+      없음) 확인 — 경합 관찰은 라이브 E2E, tick 결정론은 기존 `lib/tick.test.ts`가 이미 커버
+- [x] 동시성/경쟁 조건(다중 세션 동일 좌석 경합) 테스트 통과 — 정확히 한쪽만 성공
+- [x] 에러 핸들링·엣지 케이스 6항목(오픈 전 대기열 진입/토큰 없이 좌석 접근/만료 hold로 결제/결제
       에러 각 분기/세션 만료/Neon 풀링 부하) 각각 검증 또는 (Neon 풀링 부하는) 보류 사유 문서화
-- [ ] 결과 리포트의 타이밍·패배 횟수·이벤트가 실제 수행한 조작과 일치함을 확인
-- [ ] 테스트 중 발견된 버그는 전부 목록화되고, 병합된 코드 수정이 필요한 건은 사용자 승인 후에만
-      반영·재테스트됨
-- [ ] 타입 체크·린트·Vitest 전체 스위트 통과
+- [x] 결과 리포트의 타이밍·패배 횟수·이벤트가 실제 수행한 조작과 일치함을 확인
+- [x] 테스트 중 발견된 버그는 전부 목록화되고, 병합된 코드 수정이 필요한 건은 사용자 승인 후에만
+      반영·재테스트됨 — D-11/D-12/D-13 모두 이 절차로 처리됨
+- [x] 타입 체크·린트·Vitest 전체 스위트 통과 — `tsc --noEmit` 통과, `eslint` 클린,
+      `vitest run --fileParallelism=false` 183/183 통과
 
 ## 구현 단계
 
@@ -84,16 +85,17 @@ Phase 3 기능 작업(Task 006~011)이 모두 완료되어 MVP 핵심 플로우(
       판단, 이유는 테스트 체크리스트 참조)
 3. [x] `npx vitest run --fileParallelism=false`로 기존 전체 테스트 green 확인(베이스라인) —
       178/178 통과. `npx tsc --noEmit`, `npm run lint`도 통과
-4. [ ] 로컬 dev 서버 기동 + Playwright MCP로 전체 플로우 × 3티어 라이브 검증
-5. [ ] Playwright MCP로 봇·사용자 경합, 동시성, 에러/엣지 케이스 시나리오 순서대로 라이브 검증
-      (`/api/dev/timewarp`로 가속)
-6. [ ] 각 시나리오 진행마다 결과 리포트의 관측 데이터(stageTimings/contentionLosses/events)를 실제
+4. [x] 로컬 dev 서버 기동 + Playwright MCP로 전체 플로우 × 3티어 라이브 검증
+5. [x] Playwright MCP로 봇·사용자 경합, 동시성, 에러/엣지 케이스 시나리오 순서대로 라이브 검증
+      (`/api/dev/timewarp`로 가속, `Hold.expiresAt`·`SimulationConfig.errorRate`처럼 timewarp가
+      다루지 않는 필드는 DB 직접 rewrite로 보완)
+6. [x] 각 시나리오 진행마다 결과 리포트의 관측 데이터(stageTimings/contentionLosses/events)를 실제
       조작과 대조
-7. [ ] 버그 발견 시 즉시 중단 → 사용자에게 D-log 포맷으로 보고 → 승인 대기
-8. [ ] 승인된 수정 사항 반영 → 회귀 테스트 추가 → `docs/ROADMAP.md`에 D-11(이후 순번) 기록 →
-      원인 Task 파일에 후속 변경 절 추가(또는 신규 task 파일, 규모에 따라 판단) → 재테스트
-9. [ ] 타입 체크·린트 통과 확인
-10. [ ] "변경 사항 요약" 작성(CLAUDE.md "Task 완료 보고 규격" 4항목 형식) + ROADMAP.md Task 011-1
+7. [x] 버그 발견 시 즉시 중단 → 사용자에게 D-log 포맷으로 보고 → 승인 대기 — D-12, D-13 모두 이 절차로 처리
+8. [x] 승인된 수정 사항 반영 → 회귀 테스트 추가 → `docs/ROADMAP.md`에 D-12/D-13 기록 →
+      이 문서에 발견 경위 후속 기록 → 재테스트
+9. [x] 타입 체크·린트 통과 확인
+10. [x] "변경 사항 요약" 작성(CLAUDE.md "Task 완료 보고 규격" 4항목 형식) + ROADMAP.md Task 011-1
        줄에 ✅ 표시
 
 ## 테스트 체크리스트
@@ -153,19 +155,120 @@ Phase 3 기능 작업(Task 006~011)이 모두 완료되어 MVP 핵심 플로우(
       abandoned")로 정확히 분류됨 — Contention losses "1" 표시, Feedback에 해당 문구, DB
       `SessionResult.events`에 `contention_loss`(해당 seatId·timestamp 일치) 1건, `contentionLosses:
       1` 모두 화면과 정확히 일치함을 DB 대조로 확인
-- [ ] 동시성 — 다중 세션 동일 좌석 경합 UI 레벨 보조 확인
+- [x] 동시성 — 다중 세션 동일 좌석 경합 UI 레벨 보조 확인 — **범위 정정(사용자 확인 후 진행)**: 문자
+      그대로의 "서로 다른 세션 쿠키 2개가 동일 `Seat` row를 두고 경합"은 이 아키텍처에서 애초에 발생
+      불가능함을 먼저 확인함 — `POST /api/session`이 세션마다 완전히 독립된 `SimulationRun`+200석
+      `Seat`를 새로 만들고(ROADMAP D-1 세션 격리), `POST /api/seats`도 `seatBelongsToRun`으로 호출자
+      자신의 런에 속한 좌석인지만 확인하므로(`app/api/seats/route.ts:91`), 서로 다른 세션은 애초에
+      `Seat.id`가 겹칠 수 없음. 실제로 동일 `Seat` row를 두고 경합 가능한 유일한 시나리오는 (1)
+      봇 vs 사용자(바로 위 항목에서 검증 완료) (2) 같은 세션·다른 탭뿐 — 사용자 확인 후 (2)로 진행.
+      Playwright로 관리자 세션 획득 후, 브라우저의 실제 세션 쿠키를 그대로 실은 진짜 동시(`Promise.all`)
+      `POST /api/seats` 요청 2개를 동일 `seatId`에 발사(라우트 레벨, Vitest 모킹의 한계를 실제 dev
+      서버로 우회) — 정확히 한쪽만 `{status:"held"}`, 다른 쪽은 `{status:"conflict",
+      code:"SEAT_ALREADY_TAKEN"}` 반환 확인. DB 대조: 해당 좌석의 `Hold` row가 정확히 **1개**만
+      생성됨(`releasedAt: null`), `Seat.status`도 `HELD`로 단 한 번만 전이됨, `SessionResult.events`에
+      `seat_claim_success`+`contention_loss`가 같은 `seatId`로 10ms 간격 내 모두 기록되고
+      `contentionLosses: 1`로 정확히 증가함을 확인
 - [x] 오픈 전 대기열 진입 시도 → 403 — D-11 수정 후 재검증(Playwright, `/api/dev/timewarp`로 `Concert.openAt`을 미래로 이동): 홈페이지가 실제 `openAt` 기준 "Sale opens in 00:59:53"을 표시했고, `POST /api/queue`도 403 `SALE_NOT_OPEN`으로 정확히 거부됨. 재검증 중 발견된 `QueuePoller` 별개 버그는 사용자 승인 후 D-12로 수정 완료 — 아래 "변경 사항 요약" 참조
-- [ ] 토큰 없이 `/seats` 직접 접근 → 리다이렉트/403
-- [ ] 만료된 hold로 결제 시도(timewarp) → `hold_expired` → `/result`(D-9) 도달
-- [ ] 결제 에러 → 재시도 성공(`payment_retry_success`) / 결제 에러 → 이탈(`payment_abandoned`)
-      각각 리포트 반영 확인
-- [ ] 세션 만료(쿠키 무효/삭제) → `SESSION_MISSING`/`SESSION_INVALID` 확인
+- [x] 토큰 없이 `/seats` 직접 접근 → 리다이렉트/403 — SMALL 티어로 `POST /api/session` 직후(대기열
+      admission 전) Playwright로 3가지 실측: (1) 쿼리 파라미터 없이 `/seats` 직접 이동 → `/queue`로
+      정상 리다이렉트 (2) 존재하지 않는 `admissionToken`을 붙여도 우회 안 되고 동일하게 `/queue`로
+      리다이렉트(실제 게이트가 `requireAdmission()`이지 토큰 자체가 아님을 확인) (3) 같은 미승인
+      상태에서 `GET`/`POST /api/seats`를 직접 호출 → 둘 다 403 `NOT_ADMITTED` 정확히 반환
+- [x] 만료된 hold로 결제 시도(timewarp) → `hold_expired` → `/result`(D-9) 도달 — **정정**: `Hold.expiresAt`은
+      `lib/dev-timewarp.ts`가 다루는 시각 필드(Concert.openAt/QueueEntry.joinedAt/
+      SimulationRun.lastTickAt)에 포함돼 있지 않아 timewarp API로는 못 건드림 — DB에서 직접
+      `Hold.expiresAt`을 과거로 업데이트하는 방식으로 대체(dev-timewarp와 동일한 "저장된 시각 rewrite"
+      원리, 대상 필드만 다름). SMALL 티어로 좌석 확정 → 예매정보 → `/payment` 도착까지 정상 진행한 뒤
+      DB에서 해당 세션의 활성 Hold를 과거 시각으로 업데이트(클라이언트의 `HoldTimer`는 갱신 전 값을
+      들고 있어 "03:57" 표시, 즉 클라이언트는 아직 모름) → Bank Transfer 선택 후 Pay now 클릭 →
+      `attemptPayment`(`lib/payment.ts:62`) 자체의 `expireStaleHolds` 스윕이 감지 →
+      `{status:"hold_expired"}` 응답 → 클라이언트가 `/result`로 즉시 이동, "Your hold expired" 정확히
+      표시. DB 대조: `outcome: SEAT_LOST`, `events`에 해당 seatId의 `hold_expired` 기록, `payment`
+      stageTiming은 `enteredAt`만 있고 `exitedAt` 없음(화면의 "—"와 일치), 이 세션 `Booking`에는
+      해당 좌석 없음(결제 미완료) 모두 확인
+- [x] 결제 에러 → 재시도 성공(`payment_retry_success`) / 결제 에러 → 이탈(`payment_abandoned`)
+      각각 리포트 반영 확인 — 결제 에러는 확률 기반(`SimulationConfig.errorRate`)이라 UI만으로는
+      결정론적 재현이 안 돼, DB에서 SMALL 티어 `errorRate`를 일시적으로 1(100%)로 올려 강제 재현하고
+      끝난 뒤 원래 값(0.02)으로 복원(hold-expiry 항목과 동일한 "저장된 값 직접 rewrite" 방식).
+      **재시도 성공**: 결제 시도 → 확정 실패("Payment failed", 500) → `errorRate`를 0으로 낮춘 뒤
+      모달의 Retry 클릭 → 성공 → `/result`에 `outcome: SUCCESS`, Feedback "You hit a payment error
+      and recovered by retrying..." 정확히 표시. DB: `events`에 `payment_error`→`payment_retry_success`
+      순서대로 기록, `Booking.id`가 성공 모달의 confirmation ID와 일치. **이탈**: 결제 시도 → 확정
+      실패 → 재시도 대신 `POST /api/holds/release`를 직접 호출(실제 트리거인 `pagehide`+
+      `sendBeacon`과 동일한 서버 경로)로 이탈 재현 → `/result`에 `outcome: PAYMENT_FAILED`("Payment
+      didn't go through"), Feedback "After the payment error, refreshing or navigating away
+      forfeited your hold..." 정확히 표시. DB: `events`에 `payment_error`→`payment_abandoned` 순서로
+      기록, 이 세션 `Booking`에 해당 좌석 없음(결제 미완료), `payment` stageTiming은 `enteredAt`만
+      있고 `exitedAt` 없음(화면 "—"와 일치) — 두 시나리오 모두 durations 합이 표시된 total time과
+      정확히 일치함을 확인
+- [x] 세션 만료(쿠키 무효/삭제) → `SESSION_MISSING`/`SESSION_INVALID` 확인 — Vitest(`lib/session.test.ts`)로
+      이미 두 분기 다 커버돼 있었지만, 이번엔 실제 브라우저 쿠키 레벨(Playwright `context.clearCookies`/
+      `addCookies`, httpOnly라 페이지 JS에서는 조작 불가)로 라이브 재검증. **삭제(SESSION_MISSING)**:
+      쿠키 전체 삭제 후 `GET`/`POST /api/queue`, `GET /api/seats` 모두 401 `SESSION_MISSING` 정확히
+      반환(단 `POST /api/session`은 설계대로 새 세션을 발급하며 200 성공 — 게이트 대상이 아님).
+      `/seats`·`/booking`·`/payment` 직접 접근은 각자의 서버 가드가 `redirect`하는 대상(`/seats`)의
+      가드가 다시 `/queue`로 넘기는 2단 리다이렉트 체인을 거쳐 최종 `/queue`에 도착, 에러 메시지
+      "No session cookie present..."가 화면에 정확히 표시됨. **무효(SESSION_INVALID)**: 서명이
+      조작된 쿠키(`fake-session-id.tampered-signature`)를 주입 후 동일하게 API 401
+      `SESSION_INVALID`("Session cookie signature is invalid."), 페이지 가드도 동일한 리다이렉트
+      체인 + 정확한 에러 메시지 확인
 - [ ] Neon pooled connection 부하 — **스킵** (보류 사유는 아래 "변경 사항 요약" 참조)
-- [ ] 관측 데이터 정합성 종합 대조(전체 시나리오에 걸쳐 리포트와 실제 조작 간 불일치 없는지 최종 점검)
+- [x] 관측 데이터 정합성 종합 대조(전체 시나리오에 걸쳐 리포트와 실제 조작 간 불일치 없는지 최종 점검)
+      — 위 모든 E2E 시나리오(3티어 전체 플로우, 봇 경합, 동시 요청 경합, 오픈 전 진입, 미승인 접근,
+      hold 만료, 결제 재시도/이탈, 세션 만료)에서 매번 개별적으로 DB 대조를 수행했으며, 이번 항목은
+      그 결과를 종합 재확인한 것. 전 시나리오에 걸쳐 예외 없이 확인된 것: (1) `stageTimings` 각 단계
+      duration의 합이 화면에 표시된 total time과 항상 정확히 일치(SMALL/MEDIUM/MEGA 전체 플로우 3건,
+      재시도 성공/이탈 2건 등 총 7회 대조에서 오차 0) (2) 결제 성공 시 모달에 뜬 confirmation ID가
+      `Booking.id`와 매번 정확히 일치(4건 대조) (3) `events` 배열의 판단 이벤트(seatId·timestamp
+      포함)가 실제 조작 순서·시점과 정확히 일치하고 위조·누락·중복 없음 (4) `outcome` 분류
+      (SUCCESS/SEAT_LOST/PAYMENT_FAILED/ABANDONED)가 매번 실제 진행 상황과 의미적으로 정확히 부합.
+      불일치가 발견된 유일한 두 지점은 이미 D-12(QueuePoller 오류 메시지 덮어쓰기)와 D-13(중복
+      QueueEntry로 인한 잠재적 데이터 정합성 손상)로 승인·수정·재검증까지 완료됨 — 그 외 신규
+      불일치 없음
 
 ## 변경 사항 요약
 
-> 작업 완료 후 작성.
+**1. 이번 Task의 설계 결정 (선택지 + 채택 이유)**
+- 새 코드를 짜는 Task가 아니라 검증 Task이므로, Vitest 갭 조사에서 신규 케이스가 필요 없다고 판단된
+  항목(다중 세션 동일 좌석 경합의 라우트 레벨 모킹 등)은 억지로 테스트를 만들지 않고 E2E로 넘기는
+  기존 판단을 그대로 유지
+- 시간 가속이 필요한 시나리오는 `/api/dev/timewarp`를 우선 사용하되, 이 도구가 다루지 않는 시각
+  필드(`Hold.expiresAt`, `SimulationConfig.errorRate`)는 timewarp와 동일한 "저장된 값 직접
+  rewrite" 원리로 DB를 직접 조작 — 새 dev API를 추가하는 대신 기존 원리를 재사용해 범위를 최소화
+- "다중 세션 동일 좌석 경합"은 문자 그대로 해석하면 이 아키텍처(세션별 독립 `SimulationRun`+좌석
+  풀, ROADMAP D-1)에서 애초에 발생 불가능함을 먼저 확인하고, 사용자 확인을 받아 실제로 가능한
+  유일한 시나리오(같은 세션·다른 탭 = 진짜 동시 HTTP 요청)로 범위를 좁혀 검증
+- 발견된 버그(D-12, D-13)는 원칙대로 즉시 수정하지 않고 매번 D-log 포맷으로 먼저 보고 → 사용자
+  승인 → 수정·회귀 테스트 → ROADMAP 기록 순서를 지킴
+
+**2. 플랜에서 벗어난 부분 (deviation)**
+- "다중 세션 동일 좌석 경합"을 원안 그대로(서로 다른 세션 쿠키 2개) 테스트하지 못함 — 위 설계
+  결정에서 설명한 아키텍처적 이유로 범위를 "같은 세션 동시 요청"으로 정정
+- 진행 중 D-12, D-13 두 건의 버그를 추가로 발견·수정함(원안에는 없던 작업이지만 이 Task의 목적
+  자체가 이런 문제를 찾아내는 것이었으므로 범위 내 정상 확장으로 판단)
+- "전체 플로우 × 3티어" 검증 중 제가 스스로 "queue_reset이 dev 전용 잔여 특성"이라고 잘못 요약한
+  것을 사용자가 지적해 정정함(트리거는 dev 전용이지만 이벤트 기록 자체는 프로덕션에서도 재현
+  가능한 정상 동작) — `npm run build && npm run start`로 실측 검증까지 진행해 확정
+
+**3. 다음 Task로 미룬 것 (deferred)**
+- Neon pooled connection 부하 테스트: 로컬 dev 환경이 로컬 Postgres를 쓰고 있어 실제 Neon 풀링
+  브랜치가 연결돼 있지 않음 — 실제 Neon 브랜치가 준비되는 배포 준비 단계(Phase 4)로 이연
+- `QueuePoller`가 React Strict Mode 하에서 매 대기열 진입마다 `POST /api/queue`를 이중 발사하는
+  현상 자체(D-13으로 데이터 정합성 문제는 해결했지만, 이중 요청이 발생한다는 사실 자체는 남아있음 —
+  프로덕션에서는 Strict Mode가 없어 발생하지 않으므로 급하지 않다고 판단해 별도 이슈로 남기지 않고
+  이번 대화에서 구두로만 기록)
+
+**4. 스스로 리스크가 있다고 판단하는 지점**
+- 이번 Task에서 진행한 라이브 검증은 로컬 Postgres 대상이라, Neon pooled connection 특유의 문제
+  (커넥션 풀 고갈, 콜드 스타트 지연 등)는 전혀 검증되지 않은 상태로 남아있음
+- D-13의 `SELECT ... FOR UPDATE` 락은 `SimulationRun` row 하나를 잠그는 방식이라, 향후 이 run에
+  대해 다른 종류의 동시 쓰기가 추가되면(현재는 없음) 잠금 범위를 다시 검토할 필요가 있음
+- `queue_reset` 이벤트가 진짜 사용자 재진입과 "거의 동시 중복 요청" 양쪽 모두에서 동일하게
+  기록되어, 리포트만 보고는 두 경우를 구분할 수 없음 — 현재 PRD/UX 요구사항상 문제는 아니지만,
+  향후 "정말 새로고침했는지" 같은 세밀한 구분이 필요해지면 별도 처리가 필요함
+
+---
 
 **진행 중 발견 → 승인 후 수정 완료**: D-11 재검증 중 `app/queue/QueuePoller.tsx`에서 별개의 버그 발견 — 첫 `POST /api/queue`가 `SALE_NOT_OPEN`(403)으로 실패해도 `hasJoinedRef.current`가 무조건 `true`로 세팅되어, 2초 뒤 재시도가 `GET`으로 바뀌고 그 `GET`은 큐 엔트리가 없어 404(`Not currently in the queue. Call POST /api/queue first.`)를 반환한다. 그 결과 화면 메시지가 올바른 "Ticket sale has not opened yet."에서 잘못된 메시지로 덮어써진다. 이 Task의 진행 원칙(발견 시 즉시 고치지 않고 D-log 포맷으로 보고 후 승인 대기)에 따라 보고 후 사용자 승인을 받아 D-12로 수정·회귀 테스트 추가 완료 — 자세한 내용은 `docs/ROADMAP.md` D-12 참조.
 
