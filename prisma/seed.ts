@@ -76,7 +76,16 @@ async function main() {
         tier: Tier.MEGA,
         arrivalRatePerSec: 50,
         admissionRatePerSec: 50,
-        botIntensity: 0.8,
+        // Empirically tuned (scripts/tune-bot-intensity.ts) against
+        // lib/result.ts's TIER_BENCHMARKS.MEGA.maxContentionLosses=6: with
+        // a fixed 200-seat pool, average contentionLosses only becomes
+        // non-negligible once the bot depletes most of the pool within the
+        // first ~2s tick (negative-hypergeometric collision odds), and that
+        // region sits close to a "seats sell out before the player gets
+        // one" cliff around botIntensity~100-110. 80 lands conservatively
+        // below the cliff (measured avg ~4.2 over 30 trials, no sellouts)
+        // rather than chasing the benchmark exactly.
+        botIntensity: 80,
         errorRate: 0.1,
         latencyMs: 400,
       },

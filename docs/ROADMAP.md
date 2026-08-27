@@ -374,6 +374,14 @@
   - 여러 좌석을 all-or-nothing으로 묶는 트랜잭션 (부분 실패 롤백, 데드락 가능성)
   - 동시성 심화 버전 — 앞 3개보다 우선순위 낮음
 
+- **5순위 — MEGA 좌석 수를 15,000석 규모로 확장 (KSPO돔급), zone-scoped API 전환**
+  - `scripts/tune-bot-intensity.ts`로 MEGA `botIntensity`를 `TIER_BENCHMARKS.maxContentionLosses`에 맞춰 역산하는 과정에서 발견: 좌석 수가 티어 무관 200석 고정이라, 평균 contentionLosses가 유의미해지려면 봇이 **첫 tick 안에 풀의 상당 비율(MEGA는 ~85%)** 을 소진해야 하는 좁고 분산이 큰 구간에서만 목표에 도달함(음의 초기하분포 특성상 목표 근처 구간이 "거의 매진" 구간과 바로 인접)
+  - 이 때문에 SMALL/MEDIUM도 같은 방식으로 벤치마크에 맞추려면 botIntensity가 MEGA와 비슷한 범위까지 올라가야 해서, 좌석 수 대신 botIntensity 하나로만 티어 간 난이도를 차등화하는 데 한계가 있음이 확인됨(현재는 SMALL/MEDIUM 미조정 상태로 유지 — 2026-08-26 결정)
+  - **목표 좌석 수: 15,000석** (KSPO돔 콘서트 세팅 기준 실제 좌석 수 약 14,594~14,730석 참고, 2026-08-27 결정 — 이전에 적었던 "SMALL 100석/MEGA 300~500석" 예시는 근거 없는 숫자였으므로 폐기)
+  - **현재 아키텍처 용량 분석 결과** (`GET /api/seats`가 zone 무관 전체 목록을 2초마다 반환하는 구조, `app/seats/SeatsView.tsx`가 활성 zone만 DOM 마운트하는 구조 기준): API 응답 크기·DB 쿼리 비용은 zone 분할과 무관하게 총 좌석 수에 비례해 15,000석이면 poll당 ~1MB로 부담이 큼 — **zone-scoped fetch(`GET /api/seats?zone=X`)로의 전환이 필수**로 확인됨
+  - **Zone 수 확대(20~30개)로 가상 스크롤 회피** — 현재 5zone 구조를 그대로 두면 zone당 3,000석이 되어 가상 스크롤(`react-window` 등)이 필요하지만, 실제 대형 경기장처럼 zone을 20~30개로 세분화하면 zone당 500~750석 수준이 되어 `React.memo` 정도의 가벼운 최적화만으로 대응 가능. Zone은 스키마 필드가 아니라 `lib/dummy-data.ts::getZoneForSeatNumber()`의 순수 계산이라 구간 상수만 바꾸면 되는 가벼운 변경 — 채택
+  - Task 012 착수 시 스코프: (1) `getZoneForSeatNumber` zone 수 20~30개로 확장, (2) `GET /api/seats`를 zone-scoped 응답으로 전환, (3) `SeatCell`에 `React.memo` 적용, (4) 착수 전 15,000석 더미 데이터로 실제 프레임/응답시간 실측 스파이크 권장(위 수치는 rule-of-thumb 추정이지 벤치마크 아님)
+
 > 순서 원칙: 매번 기존 아키텍처를 갈아엎지 않고 그 위에 얹는 확장만 선택 (MVP → 프로덕션급으로 키워가는
 > 스토리가 포트폴리오 설명에서 이어지도록).
 
