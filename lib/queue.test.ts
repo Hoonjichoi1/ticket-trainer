@@ -46,7 +46,15 @@ async function createRun(opts: { tier?: Tier; openAt?: Date } = {}) {
   createdSessionIds.push(sessionId);
 
   const run = await db.simulationRun.create({
-    data: { concertId: concert.id, sessionId, tier: opts.tier ?? Tier.SMALL },
+    data: {
+      concertId: concert.id,
+      sessionId,
+      tier: opts.tier ?? Tier.SMALL,
+      // D-14: joinQueue reads SimulationRun.queueOpenAt, not Concert.openAt
+      // — mirror the same value so this file's arrival-time assertions
+      // keep controlling the value they parametrize.
+      queueOpenAt: opts.openAt ?? DEFAULT_TEST_OPEN_AT,
+    },
   });
   createdRunIds.push(run.id);
 

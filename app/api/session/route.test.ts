@@ -3,6 +3,7 @@ import { NextRequest } from "next/server";
 import { SimulationRunStatus, SessionOutcome, Tier } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
 import { recordJudgmentEvent, recordStageEntered, incrementContentionLosses } from "@/lib/session-result";
+import { resolveQueueOpenAt } from "@/lib/simulation";
 
 const store = new Map<string, { value: string }>();
 
@@ -158,5 +159,24 @@ describe("POST /api/session", () => {
     const json = await res.json();
     createdRunIds.push(json.runId);
     expect(json.concertId).toBeTruthy();
+  });
+
+  it("snapshots SimulationRun.queueOpenAt from the concert's openAt at creation time (D-14)", async () => {
+    const before = new Date();
+    const res = await postSession({ tier: Tier.SMALL });
+    const json = await res.json();
+    createdRunIds.push(json.runId);
+    const after = new Date();
+
+    const run = await db.simulationRun.findUniqueOrThrow({ where: { id: json.runId } });
+    const concert = await db.concert.findUniqueOrThrow({ where: { id: run.concertId } });
+
+    // resolveQueueOpenAt is deterministic given (openAt, now) — the route's
+    // own `now` falls somewhere in [before, after], so bound it both ways
+    // rather than asserting one exact value.
+    const expectedEarly = resolveQueueOpenAt(concert.openAt, before).getTime();
+    const expectedLate = resolveQueueOpenAt(concert.openAt, after).getTime();
+    expect(run.queueOpenAt.getTime()).toBeGreaterThanOrEqual(Math.min(expectedEarly, expectedLate));
+    expect(run.queueOpenAt.getTime()).toBeLessThanOrEqual(Math.max(expectedEarly, expectedLate));
   });
 });

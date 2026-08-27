@@ -62,7 +62,14 @@ async function createActiveRun(sessionId: string, openAt = new Date(Date.now() -
   createdConcertIds.push(concert.id);
 
   const run = await db.simulationRun.create({
-    data: { concertId: concert.id, sessionId, tier: Tier.SMALL, status: SimulationRunStatus.ACTIVE },
+    data: {
+      concertId: concert.id,
+      sessionId,
+      tier: Tier.SMALL,
+      status: SimulationRunStatus.ACTIVE,
+      // D-14: joinQueue reads SimulationRun.queueOpenAt, not Concert.openAt.
+      queueOpenAt: openAt,
+    },
   });
   createdRunIds.push(run.id);
   return run;

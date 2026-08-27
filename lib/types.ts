@@ -231,7 +231,7 @@ export interface ApiErrorResponse {
 // states can be reproduced without waiting in real time. All fields
 // optional and combinable in one request.
 export interface TimewarpRequest {
-  /** Concert.openAt = now + openInMs. Positive = still-future open (e.g. 30_000 for "30s before open"); negative = already open. */
+  /** SimulationRun.queueOpenAt = now + openInMs. Positive = still-future open (e.g. 30_000 for "30s before open"); negative = already open. */
   openInMs?: number;
   /** QueueEntry.joinedAt = now - queueRewindMs. Mutually exclusive with queueConsumedPct. */
   queueRewindMs?: number;
@@ -240,7 +240,7 @@ export interface TimewarpRequest {
   /** SimulationRun.lastTickAt = now - lastTickRewindMs. */
   lastTickRewindMs?: number;
 }
-export interface TimewarpConcertResult {
+export interface TimewarpQueueOpenResult {
   applied: boolean;
   openAt?: string;
 }
@@ -258,7 +258,7 @@ export interface TimewarpResponse {
   /** ISO 8601 — the `now` this call used as its reference point. */
   now: string;
   /** null when openInMs wasn't requested. */
-  concert: TimewarpConcertResult | null;
+  queueOpen: TimewarpQueueOpenResult | null;
   /** null when neither queueRewindMs nor queueConsumedPct was requested. */
   queue: TimewarpQueueResult | null;
   /** null when lastTickRewindMs wasn't requested. */

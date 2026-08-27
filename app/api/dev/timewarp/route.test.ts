@@ -114,32 +114,34 @@ describe("POST /api/dev/timewarp", () => {
     expect(json.code).toBe("NO_ACTIVE_RUN");
   });
 
-  it("openInMs pushes Concert.openAt to now + openInMs (future -> 'N ms before open' scenario)", async () => {
+  it("openInMs pushes SimulationRun.queueOpenAt to now + openInMs (future -> 'N ms before open' scenario)", async () => {
     const sessionId = await establishSession();
     const run = await createActiveRun(sessionId);
 
     const res = await POST(jsonRequest({ openInMs: 30_000 }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.concert.applied).toBe(true);
-    expect(json.warnings.length).toBeGreaterThan(0);
+    expect(json.queueOpen.applied).toBe(true);
+    // D-14: queueOpenAt is per-run, not the shared Concert row, so there's
+    // no cross-session footgun left to warn about.
+    expect(json.warnings).toEqual([]);
 
-    const openAt = new Date(json.concert.openAt).getTime();
+    const openAt = new Date(json.queueOpen.openAt).getTime();
     expect(openAt).toBeGreaterThan(Date.now());
     expect(openAt).toBeLessThan(Date.now() + 31_000);
 
-    const concert = await db.concert.findUniqueOrThrow({ where: { id: run.concertId } });
-    expect(concert.openAt.getTime()).toBe(openAt);
+    const persistedRun = await db.simulationRun.findUniqueOrThrow({ where: { id: run.id } });
+    expect(persistedRun.queueOpenAt.getTime()).toBe(openAt);
   });
 
-  it("negative openInMs pushes Concert.openAt into the past ('already open' scenario)", async () => {
+  it("negative openInMs pushes SimulationRun.queueOpenAt into the past ('already open' scenario)", async () => {
     const sessionId = await establishSession();
     await createActiveRun(sessionId);
 
     const res = await POST(jsonRequest({ openInMs: -3_600_000 }));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(new Date(json.concert.openAt).getTime()).toBeLessThan(Date.now());
+    expect(new Date(json.queueOpen.openAt).getTime()).toBeLessThan(Date.now());
   });
 
   it("queueRewindMs sets QueueEntry.joinedAt to exactly now - queueRewindMs", async () => {
@@ -188,7 +190,7 @@ describe("POST /api/dev/timewarp", () => {
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.queue).toEqual({ applied: false, reason: "NO_ACTIVE_QUEUE_ENTRY" });
-    expect(json.concert.applied).toBe(true);
+    expect(json.queueOpen.applied).toBe(true);
   });
 
   it("rejects queueRewindMs and queueConsumedPct given together", async () => {
@@ -226,7 +228,7 @@ describe("POST /api/dev/timewarp", () => {
     );
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.concert.applied).toBe(true);
+    expect(json.queueOpen.applied).toBe(true);
     expect(json.queue.applied).toBe(true);
     expect(json.simulationRun.applied).toBe(true);
   });

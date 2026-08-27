@@ -58,13 +58,20 @@ model Concert {
 // since the tick engine runs as tick-on-request in serverless route
 // handlers with no persistent process between requests.
 model SimulationRun {
-  id         String              @id @default(uuid())
-  concertId  String
-  sessionId  String
-  tier       Tier
-  status     SimulationRunStatus @default(ACTIVE)
-  lastTickAt DateTime            @default(now())
-  createdAt  DateTime            @default(now())
+  id          String              @id @default(uuid())
+  concertId   String
+  sessionId   String
+  tier        Tier
+  status      SimulationRunStatus @default(ACTIVE)
+  // D-14: this run's own "sale considered open at" reference, snapshotted
+  // once by POST /api/session via resolveQueueOpenAt(concert.openAt, now)
+  // — never re-derived later. lib/queue.ts's joinQueue reads this instead
+  // of the shared Concert.openAt, so a stale seeded openAt doesn't make
+  // every session's initial queue position balloon with real-world drift,
+  // without mutating the Concert row shared across concurrent sessions.
+  queueOpenAt DateTime            @default(now())
+  lastTickAt  DateTime            @default(now())
+  createdAt   DateTime            @default(now())
 
   concert      Concert      @relation(fields: [concertId], references: [id])
   seats        Seat[]

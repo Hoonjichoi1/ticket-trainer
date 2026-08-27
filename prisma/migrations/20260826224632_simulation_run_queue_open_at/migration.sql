@@ -1,0 +1,11 @@
+-- AlterTable
+-- ROADMAP D-14: SimulationRun gets its own "sale considered open at"
+-- reference, snapshotted once at session-creation time from
+-- resolveQueueOpenAt(Concert.openAt, now). lib/queue.ts reads this instead
+-- of the shared Concert.openAt so a stale seeded openAt doesn't make every
+-- session's initial queue position balloon with real-world clock drift,
+-- without mutating the Concert row shared across concurrent sessions.
+-- DEFAULT now() covers existing rows (all already-resolved/expired
+-- dev-test runs) and every test fixture that creates a SimulationRun
+-- directly without going through POST /api/session.
+ALTER TABLE "SimulationRun" ADD COLUMN     "queueOpenAt" TIMESTAMP(3) NOT NULL DEFAULT CURRENT_TIMESTAMP;

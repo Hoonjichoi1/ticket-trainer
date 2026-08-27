@@ -57,6 +57,36 @@ export function computeElapsedTime(input: ElapsedTimeInput): ElapsedTime {
 }
 
 // ---------------------------------------------------------------------
+// Queue-open reference resolution (D-14)
+// ---------------------------------------------------------------------
+
+/**
+ * Resolves the "sale considered open at" reference `POST /api/session`
+ * snapshots onto `SimulationRun.queueOpenAt` — the real `openAt` if it's
+ * still in the future, or `now` itself if it has already passed. Used once
+ * at run-creation time and persisted (D-14), because D-4 already fixes
+ * queue position as a value resolved once at join time and only ever
+ * decayed forward afterward — this must be resolved once for the same
+ * reason, not recomputed on every request.
+ *
+ * Deliberately does NOT add `app/page.tsx`'s separate `resolveDisplayOpenAt`
+ * "+60s" demo fallback: that fallback exists purely so the home page's
+ * countdown UI has something nonzero to animate toward when the seed data
+ * is stale (a display-only concern, D-11 follow-up). Reusing that same
+ * +60s offset here would push every session's *actual* queue-open
+ * reference 60s into the future from whenever `POST /api/session` happens
+ * to run — meaning `joinQueue`'s `SALE_NOT_OPEN` gate would reject anyone
+ * who joins the queue immediately after starting a session, even though
+ * they just finished watching that exact countdown reach zero. Clamping to
+ * `now` instead means a session started against a stale `openAt` is
+ * considered open immediately, giving an initial queue position at or near
+ * 0 rather than an artificial extra wait.
+ */
+export function resolveQueueOpenAt(openAt: Date, now: Date): Date {
+  return openAt > now ? openAt : now;
+}
+
+// ---------------------------------------------------------------------
 // Bot claim count (F008 prep) — TODO: implement
 // ---------------------------------------------------------------------
 export interface BotClaimInput {

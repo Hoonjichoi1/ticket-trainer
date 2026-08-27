@@ -2,6 +2,7 @@ import { NextRequest, NextResponse } from "next/server";
 import { prisma } from "@/lib/db";
 import { getOrCreateSessionId } from "@/lib/session";
 import { resetSessionResult } from "@/lib/session-result";
+import { resolveQueueOpenAt } from "@/lib/simulation";
 import {
   SimulationRunStatus,
   Tier,
@@ -59,6 +60,13 @@ export async function POST(request: NextRequest) {
   // Server Function — not inside an arbitrary async callback.
   const { sessionId } = await getOrCreateSessionId();
 
+  // D-14: snapshot this run's own open-time reference once, here, rather
+  // than letting lib/queue.ts re-derive it on every request — same reason
+  // D-4 fixes QueueEntry.position at join time and only ever decays it
+  // afterward, never recomputes it.
+  const now = new Date();
+  const queueOpenAt = resolveQueueOpenAt(concert.openAt, now);
+
   const run = await prisma.$transaction(async (tx) => {
     // Superseded, not "completed" — the user didn't finish this run via
     // the real flow, a new one just replaced it (retry or duplicate
@@ -80,6 +88,7 @@ export async function POST(request: NextRequest) {
         concertId: concert.id,
         sessionId,
         tier: body.tier as Tier,
+        queueOpenAt,
       },
     });
 

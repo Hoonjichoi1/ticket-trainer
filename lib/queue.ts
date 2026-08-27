@@ -36,11 +36,10 @@ function toSnapshot(params: {
   };
 }
 
-/** The session's currently ACTIVE SimulationRun, with its tier's config and concert's openAt — or null if none. */
+/** The session's currently ACTIVE SimulationRun, with its tier's config — or null if none. */
 export async function getActiveRun(sessionId: string) {
   const run = await prisma.simulationRun.findFirst({
     where: { sessionId, status: SimulationRunStatus.ACTIVE },
-    include: { concert: true },
   });
   if (!run) return null;
 
@@ -64,8 +63,8 @@ export async function joinQueue(params: {
 }): Promise<JoinQueueResult> {
   const { sessionId, runId, now } = params;
 
-  const run = await prisma.simulationRun.findUniqueOrThrow({ where: { id: runId }, include: { concert: true } });
-  if (now.getTime() < run.concert.openAt.getTime()) {
+  const run = await prisma.simulationRun.findUniqueOrThrow({ where: { id: runId } });
+  if (now.getTime() < run.queueOpenAt.getTime()) {
     return { ok: false, code: "SALE_NOT_OPEN" };
   }
 
@@ -109,7 +108,7 @@ export async function joinQueue(params: {
     // joining closer to the exact open moment gets a lower (better) starting
     // position. QueueEntry.position is Int, so round the continuous
     // arrivalRatePerSec * elapsedSeconds value.
-    const elapsedSinceOpen = computeElapsedTime({ since: run.concert.openAt, now });
+    const elapsedSinceOpen = computeElapsedTime({ since: run.queueOpenAt, now });
     const initialPosition = Math.round(config.arrivalRatePerSec * elapsedSinceOpen.seconds);
 
     return tx.queueEntry.create({

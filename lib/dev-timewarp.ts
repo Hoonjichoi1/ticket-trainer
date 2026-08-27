@@ -1,8 +1,8 @@
 // Dev/test-only time-warp utility (ROADMAP D-7). lib/simulation.ts's
 // tick-on-request math is a pure function of "now minus a stored
-// timestamp" (Concert.openAt, QueueEntry.joinedAt,
+// timestamp" (SimulationRun.queueOpenAt, QueueEntry.joinedAt,
 // SimulationRun.lastTickAt) — so rewriting those stored timestamps into
-// the past (or, for openAt, into the near future) reproduces
+// the past (or, for queueOpenAt, into the near future) reproduces
 // "already open" / "already near admission" states without waiting in
 // real time. This module never imports or touches lib/simulation.ts's
 // calculation logic — it only mutates the DB rows that logic reads.
@@ -12,15 +12,7 @@ import { prisma } from "@/lib/db";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import { QueueEntryStatus } from "@/lib/types";
 import { getActiveRun } from "@/lib/queue";
-import type { TimewarpConcertResult, TimewarpQueueResult, TimewarpSimulationRunResult } from "@/lib/types";
-
-// Concert is a single row shared by every session/run pointing at it
-// (no per-session copy in the schema) — mutating openAt affects ALL of
-// them, not just the caller's session. Acceptable for this dev tool's
-// intended single-developer/local-testing use, but surfaced back to the
-// caller every time so it's never a silent surprise.
-const SHARED_CONCERT_WARNING =
-  "Concert.openAt is a single shared row — this affects ALL sessions currently pointing at this concert, not just yours.";
+import type { TimewarpQueueOpenResult, TimewarpQueueResult, TimewarpSimulationRunResult } from "@/lib/types";
 
 export interface ApplyTimewarpParams {
   sessionId: string;
@@ -33,7 +25,7 @@ export interface ApplyTimewarpParams {
 
 export interface ApplyTimewarpSuccess {
   now: string;
-  concert: TimewarpConcertResult | null;
+  queueOpen: TimewarpQueueOpenResult | null;
   queue: TimewarpQueueResult | null;
   simulationRun: TimewarpSimulationRunResult | null;
   warnings: string[];
@@ -67,15 +59,17 @@ export async function applyTimewarp(params: ApplyTimewarpParams): Promise<ApplyT
 
   const result = await prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ApplyTimewarpSuccess> => {
     const warnings: string[] = [];
-    let concert: TimewarpConcertResult | null = null;
+    let queueOpen: TimewarpQueueOpenResult | null = null;
     let queue: TimewarpQueueResult | null = null;
     let simulationRun: TimewarpSimulationRunResult | null = null;
 
     if (openInMs !== undefined) {
-      const openAt = new Date(now.getTime() + openInMs);
-      await tx.concert.update({ where: { id: run.concertId }, data: { openAt } });
-      concert = { applied: true, openAt: openAt.toISOString() };
-      warnings.push(SHARED_CONCERT_WARNING);
+      // D-14: SimulationRun.queueOpenAt is per-run, so this only ever
+      // affects the caller's own session — no shared-row race with other
+      // concurrent sessions the way mutating Concert.openAt used to have.
+      const queueOpenAt = new Date(now.getTime() + openInMs);
+      await tx.simulationRun.update({ where: { id: run.id }, data: { queueOpenAt } });
+      queueOpen = { applied: true, openAt: queueOpenAt.toISOString() };
     }
 
     if (queueRewindMs !== undefined || queueConsumedPct !== undefined) {
@@ -104,7 +98,7 @@ export async function applyTimewarp(params: ApplyTimewarpParams): Promise<ApplyT
       simulationRun = { applied: true, lastTickAt: lastTickAt.toISOString() };
     }
 
-    return { now: now.toISOString(), concert, queue, simulationRun, warnings };
+    return { now: now.toISOString(), queueOpen, queue, simulationRun, warnings };
   });
 
   return { ok: true, result };
