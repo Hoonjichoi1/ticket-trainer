@@ -113,6 +113,20 @@
   - **영향 범위**: `prisma/schema.prisma`(`SimulationRun.queueOpenAt` 추가), `lib/simulation.ts`(`resolveQueueOpenAt` 신설), `app/api/session/route.ts`(런 생성 시 스냅샷), `lib/queue.ts`(`joinQueue`의 게이트/초기 순번 계산 대상 변경), `lib/dev-timewarp.ts` + `lib/types.ts`(D-7의 `openInMs`가 이제 `SimulationRun.queueOpenAt`을 직접 갱신 — 더 이상 공유 row를 건드리지 않으므로 기존 `SHARED_CONCERT_WARNING` 경고 제거)
   - **구현**: `prisma/migrations/20260826224632_simulation_run_queue_open_at`로 `queueOpenAt DateTime @default(now())` 추가(기존 테스트 픽스처 다수가 `POST /api/session`을 거치지 않고 직접 `SimulationRun`을 만들기 때문에 기본값 필요). 회귀 테스트: `lib/queue.test.ts`/`app/api/queue/route.test.ts`의 런 생성 헬퍼가 `openAt` 파라미터와 동일한 값을 `queueOpenAt`에도 반영하도록 수정, `app/api/dev/timewarp/route.test.ts`의 `json.concert` 계열 단언을 `json.queueOpen`으로 갱신, `app/api/session/route.test.ts`에 생성된 런의 `queueOpenAt`이 `resolveQueueOpenAt(concert.openAt, now)`와 일치하는지 확인하는 케이스 추가. 자동 테스트(187개) 통과 후에도 Chrome으로 실제 홈→Book Now→대기열 플로우를 SMALL로 직접 재현해 위 2차 버그를 잡아냈고, 수정 후 재검증에서 즉시 정상적인 소수 순번으로 입장되는 것을 확인함
   - See: 사용자 보고 (2026-08-26)
+- [x] **D-15. MEGA `botIntensity` 실측 중 200석 고정 풀의 구조적 한계 발견 → 좌석 수를 티어별로 차등 확장하기로 결정** (`scripts/tune-bot-intensity.ts`로 MEGA `botIntensity`를 `TIER_BENCHMARKS.maxContentionLosses=6`에 맞춰 역산하는 과정에서 발견): 좌석 수가 티어 무관 200석 고정이다 보니, 평균 `contentionLosses`가 유의미해지려면 봇이 **첫 tick 안에 풀의 상당 비율(MEGA는 ~85%)**을 소진해야 하는 좁고 분산이 큰 구간에서만 목표에 도달함(음의 초기하분포 특성상 목표 근처 구간이 "거의 매진" 구간과 바로 인접) — SMALL/MEDIUM도 같은 방식으로 벤치마크(1/3)에 맞추려면 `botIntensity`가 MEGA와 비슷한 범위까지 올라가야 해서, 좌석 수 대신 `botIntensity` 하나로만 티어 간 난이도를 차등화하는 데 구조적 한계가 있음이 확인됨(SMALL/MEDIUM은 미조정 유지, 2026-08-26 결정) → **결정: 좌석 수 자체를 실제 콘서트장 규모로, 티어별로 차등 확장**(실제 콘서트도 소극장 vs 대형돔은 좌석 수가 다르다는 점 + PRD F001 "난이도 조절이 훈련 서비스의 기본 가치" 근거)
+  - **목표 좌석 수** (2026-08-27 결정, KSPO돔 콘서트 세팅 기준 실제 좌석 수 약 14,594~14,730석 참고 — 실제 레퍼런스는 F005/Task 005-4의 "원형 다층 아레나 구조감" 참고일 뿐 좌석 수 자체는 문서에 없었으므로 이번에 별도로 확정):
+
+    | Tier | 좌석 수 | rows × seatsPerRow | Zone 수 | 좌석/zone |
+    |---|---|---|---|---|
+    | SMALL | 2,500 | 25 × 100 | 8 | 313 |
+    | MEDIUM | 7,000 | 70 × 100 | 15 | 467 |
+    | MEGA | 15,000 | 150 × 100 | 25 | 600 |
+
+  - **현재 아키텍처 용량 분석**: `GET /api/seats`(`app/api/seats/route.ts`)/`listSeatMap()`(`lib/seats.ts:201-208`)가 zone 무관 전체 좌석 목록을 2초마다 반환하는 구조라, API 응답 크기·DB 쿼리 비용은 zone 분할과 무관하게 총 좌석 수에 비례 — MEGA 15,000석이면 poll당 ~1MB. **zone-scoped fetch(`GET /api/seats?zone=X`) 전환 필수**로 확인됨. 반면 DOM 렌더링(`app/seats/SeatsView.tsx`)은 활성 zone만 마운트하므로 zone당 좌석 수에만 비례 — 위 표의 zone 배분(313~600석/zone)은 모두 `React.memo` 정도로 대응 가능한 범위라 가상 스크롤 불필요
+  - **스키마 변경 방향**: `SimulationConfig`에 `seatRows Int`/`seatsPerRow Int`/`zoneCount Int` 필드 추가(마이그레이션 필요, `Seat` 모델은 `row`/`number`만 가지면 되므로 변경 없음), `app/api/session/route.ts`의 하드코딩된 `SEAT_ROWS`/`SEATS_PER_ROW`를 티어 파라미터화
+  - **행(row) 라벨링 재검토 필요**: 현재 대문자 알파벳 1글자(A~J, 최대 26행)라 MEDIUM 70행/MEGA 150행을 못 담음 — 숫자 기반(1, 2, 3...) 라벨 전환 권장("행 번호=무대 거리감" 의미 보존, 무한 확장 가능, 실제 대형 경기장·한국 티케팅 관행과 부합). 최종 결정은 Task 012 착수 시
+  - **영향 범위**: MEGA `botIntensity`도 15,000석 풀 기준으로 재실측·재튜닝 필요(200석 기준이던 기존 값 80은 무효, `scripts/tune-bot-intensity.ts` 재사용)
+  - See: 사용자 요청 (2026-08-26~27) — **Task 012(신설, Phase 4)로 승격**
 ---
 
 ## 개발 워크플로우
@@ -307,12 +321,22 @@
 
 ---
 
-### Phase 4: 최적화 및 배포
+### Phase 4: 규모 확장 및 배포
 
-> **목표:** 성능·안정성 확보 및 Vercel 배포 파이프라인 구축
+> **목표:** 좌석 규모를 실제 콘서트장 수준으로 확장하고, 성능·안정성 확보 및 Vercel 배포 파이프라인 구축
 
-- **Task 012: 성능 최적화 및 배포**
-  - 좌석맵 200석 폴링/렌더링 최적화, tick 엔진 쿼리 최적화
+- **Task 012: 좌석 규모 확장** (See: D-15, `tasks/014-seat-scale-expansion.md`)
+  - `SimulationConfig`에 `seatRows`/`seatsPerRow`/`zoneCount` 필드 추가 + 마이그레이션
+  - 행 라벨링을 숫자 기반으로 전환 (현재 알파벳 1글자 A~J로는 MEDIUM 70행/MEGA 150행을 못 담음)
+  - `app/api/session/route.ts`의 seat-generation을 티어 파라미터화
+  - `getZoneForSeatNumber`(`lib/dummy-data.ts`)를 티어별 zone 수 참조하도록 변경
+  - `GET /api/seats`를 zone-scoped 응답으로 전환 (`app/api/seats/route.ts`, `lib/seats.ts::listSeatMap`)
+  - `SeatCell`(`app/components/SeatCell.tsx`)에 `React.memo` 적용
+  - MEGA `botIntensity` 재실측·재튜닝 (200석 기준이던 기존 값 80은 15,000석 풀에서 무효 — `scripts/tune-bot-intensity.ts` 재사용)
+  - 착수 전 15,000석 더미 데이터로 실제 프레임/응답시간 실측 스파이크 권장 (D-15의 용량 판단은 rule-of-thumb 추정이지 벤치마크 아님)
+
+- **Task 013: 성능 최적화 및 배포**
+  - tick 엔진 쿼리 최적화
   - Neon pooled connection 프로덕션 부하 검증 (로컬 성공·프로덕션 실패 pitfall 방지)
   - Vercel 배포 파이프라인 구축 (GitHub push 자동 배포, 환경 변수 설정)
   - 에러 모니터링·로깅 구성
@@ -373,14 +397,6 @@
 - **4순위(선택) — 다좌석 예매 (원자적 다중 hold)**
   - 여러 좌석을 all-or-nothing으로 묶는 트랜잭션 (부분 실패 롤백, 데드락 가능성)
   - 동시성 심화 버전 — 앞 3개보다 우선순위 낮음
-
-- **5순위 — MEGA 좌석 수를 15,000석 규모로 확장 (KSPO돔급), zone-scoped API 전환**
-  - `scripts/tune-bot-intensity.ts`로 MEGA `botIntensity`를 `TIER_BENCHMARKS.maxContentionLosses`에 맞춰 역산하는 과정에서 발견: 좌석 수가 티어 무관 200석 고정이라, 평균 contentionLosses가 유의미해지려면 봇이 **첫 tick 안에 풀의 상당 비율(MEGA는 ~85%)** 을 소진해야 하는 좁고 분산이 큰 구간에서만 목표에 도달함(음의 초기하분포 특성상 목표 근처 구간이 "거의 매진" 구간과 바로 인접)
-  - 이 때문에 SMALL/MEDIUM도 같은 방식으로 벤치마크에 맞추려면 botIntensity가 MEGA와 비슷한 범위까지 올라가야 해서, 좌석 수 대신 botIntensity 하나로만 티어 간 난이도를 차등화하는 데 한계가 있음이 확인됨(현재는 SMALL/MEDIUM 미조정 상태로 유지 — 2026-08-26 결정)
-  - **목표 좌석 수: 15,000석** (KSPO돔 콘서트 세팅 기준 실제 좌석 수 약 14,594~14,730석 참고, 2026-08-27 결정 — 이전에 적었던 "SMALL 100석/MEGA 300~500석" 예시는 근거 없는 숫자였으므로 폐기)
-  - **현재 아키텍처 용량 분석 결과** (`GET /api/seats`가 zone 무관 전체 목록을 2초마다 반환하는 구조, `app/seats/SeatsView.tsx`가 활성 zone만 DOM 마운트하는 구조 기준): API 응답 크기·DB 쿼리 비용은 zone 분할과 무관하게 총 좌석 수에 비례해 15,000석이면 poll당 ~1MB로 부담이 큼 — **zone-scoped fetch(`GET /api/seats?zone=X`)로의 전환이 필수**로 확인됨
-  - **Zone 수 확대(20~30개)로 가상 스크롤 회피** — 현재 5zone 구조를 그대로 두면 zone당 3,000석이 되어 가상 스크롤(`react-window` 등)이 필요하지만, 실제 대형 경기장처럼 zone을 20~30개로 세분화하면 zone당 500~750석 수준이 되어 `React.memo` 정도의 가벼운 최적화만으로 대응 가능. Zone은 스키마 필드가 아니라 `lib/dummy-data.ts::getZoneForSeatNumber()`의 순수 계산이라 구간 상수만 바꾸면 되는 가벼운 변경 — 채택
-  - Task 012 착수 시 스코프: (1) `getZoneForSeatNumber` zone 수 20~30개로 확장, (2) `GET /api/seats`를 zone-scoped 응답으로 전환, (3) `SeatCell`에 `React.memo` 적용, (4) 착수 전 15,000석 더미 데이터로 실제 프레임/응답시간 실측 스파이크 권장(위 수치는 rule-of-thumb 추정이지 벤치마크 아님)
 
 > 순서 원칙: 매번 기존 아키텍처를 갈아엎지 않고 그 위에 얹는 확장만 선택 (MVP → 프로덕션급으로 키워가는
 > 스토리가 포트폴리오 설명에서 이어지도록).
