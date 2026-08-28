@@ -85,8 +85,7 @@ export default function BookingView({ seat, holdExpiresAt }: BookingViewProps) {
         <div>
           <p className="text-xs text-[var(--color-mute)]">Selected seat</p>
           <p className="font-mono text-2xl font-semibold text-[var(--color-ink)]">
-            {seat.row}
-            {seat.number}
+            Row {seat.row}, Seat {seat.number}
           </p>
           <p className="mt-1 text-xs text-[var(--color-mute)]">1 ticket</p>
         </div>

@@ -57,7 +57,7 @@ function SeatCellImpl({
       type="button"
       disabled={!isAvailable}
       aria-pressed={isAvailable ? selected : undefined}
-      aria-label={`Seat ${row}${number}, ${status.toLowerCase()}`}
+      aria-label={`Seat row ${row}, number ${number}, ${status.toLowerCase()}`}
       onClick={() => {
         if (isAvailable) onSelect?.(seatId);
       }}
@@ -73,7 +73,7 @@ function SeatCellImpl({
         .filter(Boolean)
         .join(" ")}
     >
-      {showLabel ? `${row}${number}` : null}
+      {showLabel ? `${row}-${number}` : null}
     </button>
   );
 }

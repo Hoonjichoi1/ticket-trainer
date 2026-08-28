@@ -157,8 +157,7 @@ export default function PaymentView({ seat, holdExpiresAt }: PaymentViewProps) {
         <div>
           <p className="text-xs text-[var(--color-mute)]">Selected seat</p>
           <p className="font-mono text-2xl font-semibold text-[var(--color-ink)]">
-            {seat.row}
-            {seat.number}
+            Row {seat.row}, Seat {seat.number}
           </p>
         </div>
         <div className="text-right">
