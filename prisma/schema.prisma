@@ -168,6 +168,9 @@ model SimulationConfig {
   botIntensity        Float
   errorRate           Float
   latencyMs           Int
+  seatRows            Int
+  seatsPerRow         Int
+  zoneCount           Int
 }
 
 // One row per session, upserted incrementally starting at Task 008 (queue

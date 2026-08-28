@@ -63,6 +63,10 @@ async function main() {
         botIntensity: 0.1,
         errorRate: 0.02,
         latencyMs: 50,
+        // D-15 target seat scale: 25 rows x 100 seats/row = 2,500 seats, 8 zones.
+        seatRows: 25,
+        seatsPerRow: 100,
+        zoneCount: 8,
       },
       {
         tier: Tier.MEDIUM,
@@ -71,11 +75,19 @@ async function main() {
         botIntensity: 0.4,
         errorRate: 0.05,
         latencyMs: 150,
+        // D-15 target seat scale: 70 rows x 100 seats/row = 7,000 seats, 15 zones.
+        seatRows: 70,
+        seatsPerRow: 100,
+        zoneCount: 15,
       },
       {
         tier: Tier.MEGA,
         arrivalRatePerSec: 50,
         admissionRatePerSec: 50,
+        // D-15 target seat scale: 150 rows x 100 seats/row = 15,000 seats, 25 zones.
+        seatRows: 150,
+        seatsPerRow: 100,
+        zoneCount: 25,
         // Empirically tuned (scripts/tune-bot-intensity.ts) against
         // lib/result.ts's TIER_BENCHMARKS.MEGA.maxContentionLosses=6: with
         // a fixed 200-seat pool, average contentionLosses only becomes

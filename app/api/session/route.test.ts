@@ -68,7 +68,9 @@ describe("POST /api/session", () => {
     expect(json.code).toBe("INVALID_BODY");
   });
 
-  it("starts a simulation run scoped to a fresh session, with 200 available seats", async () => {
+  it("starts a simulation run scoped to a fresh session, with the tier's configured seat map", async () => {
+    const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier: Tier.SMALL } });
+
     const res = await postSession({ tier: Tier.SMALL });
     expect(res.status).toBe(200);
     const json = await res.json();
@@ -79,11 +81,33 @@ describe("POST /api/session", () => {
     expect(typeof json.concertId).toBe("string");
 
     const seats = await db.seat.findMany({ where: { simulationRunId: json.runId } });
-    expect(seats).toHaveLength(200);
+    expect(seats).toHaveLength(config.seatRows * config.seatsPerRow);
     expect(seats.every((s) => s.status === "AVAILABLE")).toBe(true);
+
+    // Row labels are numeric strings "1".."seatRows" (D-15: numeric labeling
+    // replaces the old A-Z scheme so tiers with >26 rows are representable).
+    const rowLabels = new Set(seats.map((s) => s.row));
+    expect(rowLabels.size).toBe(config.seatRows);
+    for (let i = 1; i <= config.seatRows; i++) {
+      expect(rowLabels.has(String(i))).toBe(true);
+    }
+    expect(Math.min(...seats.map((s) => s.number))).toBe(1);
+    expect(Math.max(...seats.map((s) => s.number))).toBe(config.seatsPerRow);
 
     // Cookie was issued for the new session.
     expect(store.size).toBe(1);
+  });
+
+  it("generates each tier's own configured seat count (D-15 target scale)", async () => {
+    for (const tier of [Tier.MEDIUM, Tier.MEGA]) {
+      const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier } });
+      const res = await postSession({ tier });
+      const json = await res.json();
+      createdRunIds.push(json.runId);
+
+      const seatCount = await db.seat.count({ where: { simulationRunId: json.runId } });
+      expect(seatCount).toBe(config.seatRows * config.seatsPerRow);
+    }
   });
 
   it("records the requested tier on the created SimulationRun", async () => {
@@ -107,6 +131,9 @@ describe("POST /api/session", () => {
   });
 
   it("resets on restart: ends the previous ACTIVE run and its seats stay isolated from the new run", async () => {
+    const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier: Tier.SMALL } });
+    const expectedSeatCount = config.seatRows * config.seatsPerRow;
+
     const first = await (await postSession({ tier: Tier.SMALL })).json();
     createdRunIds.push(first.runId);
     const second = await (await postSession({ tier: Tier.SMALL })).json();
@@ -120,8 +147,8 @@ describe("POST /api/session", () => {
 
     const firstRunSeats = await db.seat.count({ where: { simulationRunId: first.runId } });
     const secondRunSeats = await db.seat.count({ where: { simulationRunId: second.runId } });
-    expect(firstRunSeats).toBe(200);
-    expect(secondRunSeats).toBe(200);
+    expect(firstRunSeats).toBe(expectedSeatCount);
+    expect(secondRunSeats).toBe(expectedSeatCount);
   });
 
   it("resets SessionResult on restart (ROADMAP D-8): a prior attempt's stageTimings/events/contentionLosses/outcome don't bleed into the new run's report", async () => {

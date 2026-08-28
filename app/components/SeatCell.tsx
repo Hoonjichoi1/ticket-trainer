@@ -1,5 +1,6 @@
 "use client";
 
+import { memo } from "react";
 import { SeatStatus } from "@/lib/types";
 
 export interface SeatCellProps {
@@ -34,9 +35,12 @@ const STATUS_STYLES: Record<SeatStatus, string> = {
  * Purely presentational — status/selected come in via props, no
  * fetching or independent seat-state ownership. The click handler only
  * guards against acting on a non-available seat (the same category as a
- * disabled <button>), not business logic.
+ * disabled <button>), not business logic. Wrapped in React.memo (D-15):
+ * zones now hold up to 600 seats (MEGA), and every 2s poll re-renders the
+ * whole zone in SeatsView — without memoization, every SeatCell
+ * re-renders even when its own props (status/selected) didn't change.
  */
-export function SeatCell({
+function SeatCellImpl({
   seatId,
   row,
   number,
@@ -73,3 +77,5 @@ export function SeatCell({
     </button>
   );
 }
+
+export const SeatCell = memo(SeatCellImpl);

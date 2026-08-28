@@ -11,12 +11,6 @@ import {
   type StartSimulationResponse,
 } from "@/lib/types";
 
-// Matches prisma/seed.ts's template exactly (10 rows A-J x 20 seats = 200)
-// so every session-scoped SimulationRun gets the same layout the seed
-// data uses for the one shared Concert.
-const SEAT_ROWS = ["A", "B", "C", "D", "E", "F", "G", "H", "I", "J"];
-const SEATS_PER_ROW = 20;
-
 function isTier(value: unknown): value is Tier {
   return typeof value === "string" && (Object.values(Tier) as string[]).includes(value);
 }
@@ -24,8 +18,10 @@ function isTier(value: unknown): value is Tier {
 // Starts (or restarts) a session's simulation: issues/reuses the
 // anonymous session cookie (F012), ends that session's previous ACTIVE
 // run if any (D-1 "다시 도전" reset), then creates a fresh SimulationRun
-// with its own 200-seat map (F001 backend, D-2: tier arrives as a
-// request param here, not stored on the session cookie itself).
+// with its own seat map sized per the tier's SimulationConfig (F001
+// backend, D-2: tier arrives as a request param here, not stored on the
+// session cookie itself; D-15: seat count/rows are tier-parameterized,
+// no longer a fixed 200).
 export async function POST(request: NextRequest) {
   let body: Partial<StartSimulationRequest>;
   try {
@@ -92,9 +88,13 @@ export async function POST(request: NextRequest) {
       },
     });
 
+    // D-15: row labels are numeric ("1".."seatRows") rather than A-Z so
+    // tiers with more than 26 rows (MEDIUM 70, MEGA 150) remain representable,
+    // while still preserving "row number = distance from stage".
+    const config = await tx.simulationConfig.findUniqueOrThrow({ where: { tier: newRun.tier } });
     await tx.seat.createMany({
-      data: SEAT_ROWS.flatMap((row) =>
-        Array.from({ length: SEATS_PER_ROW }, (_, i) => ({
+      data: Array.from({ length: config.seatRows }, (_, rowIndex) => String(rowIndex + 1)).flatMap((row) =>
+        Array.from({ length: config.seatsPerRow }, (_, i) => ({
           concertId: concert.id,
           simulationRunId: newRun.id,
           row,
