@@ -3,6 +3,7 @@ import { Tier, SeatStatus } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
 import {
   claimSeat,
+  claimSeatsBatch,
   expireStaleHolds,
   listSeatMap,
   runSeatMapTick,
@@ -318,6 +319,89 @@ describe("listSeatMap", () => {
     const map = await listSeatMap({ runId: run.id, zone: "1", seatGrid: SMALL_GRID });
 
     expect(map.map((s) => s.id)).toEqual([row9.id, row10.id, row11.id]);
+  });
+});
+
+describe("claimSeatsBatch", () => {
+  it("claims exactly `count` AVAILABLE seats, flips them to HELD, and creates a Hold per seat under the given sessionId", async () => {
+    const run = await createRun();
+    const seats = await createSeats(run.id, run.concertId, 5);
+    const sessionId = freshSessionId();
+    const now = new Date("2026-01-01T00:00:00.000Z");
+
+    const result = await claimSeatsBatch({ runId: run.id, sessionId, count: 3, now });
+
+    expect(result.claimedSeatIds).toHaveLength(3);
+    // Every claimed id is one of the run's real seats, and none appear twice.
+    const seatIds = new Set(seats.map((s) => s.id));
+    for (const id of result.claimedSeatIds) expect(seatIds.has(id)).toBe(true);
+    expect(new Set(result.claimedSeatIds).size).toBe(3);
+
+    const heldSeats = await db.seat.findMany({ where: { simulationRunId: run.id, status: SeatStatus.HELD } });
+    expect(heldSeats).toHaveLength(3);
+    expect(heldSeats.map((s) => s.id).sort()).toEqual([...result.claimedSeatIds].sort());
+
+    const holds = await db.hold.findMany({ where: { seatId: { in: result.claimedSeatIds } } });
+    expect(holds).toHaveLength(3);
+    for (const hold of holds) {
+      expect(hold.sessionId).toBe(sessionId);
+      expect(hold.releasedAt).toBeNull();
+      expect(hold.expiresAt.getTime()).toBe(now.getTime() + HOLD_DURATION_MS);
+    }
+  });
+
+  it("caps at however many seats are actually AVAILABLE when count exceeds the pool", async () => {
+    const run = await createRun();
+    await createSeats(run.id, run.concertId, 4);
+    const now = new Date();
+
+    const result = await claimSeatsBatch({ runId: run.id, sessionId: freshSessionId(), count: 100, now });
+
+    expect(result.claimedSeatIds).toHaveLength(4);
+    const heldCount = await db.seat.count({ where: { simulationRunId: run.id, status: SeatStatus.HELD } });
+    expect(heldCount).toBe(4);
+  });
+
+  it("never claims an already-HELD or -SOLD seat", async () => {
+    const run = await createRun();
+    const [available, held, sold] = await createSeats(run.id, run.concertId, 3);
+    await db.seat.update({ where: { id: held.id }, data: { status: SeatStatus.HELD } });
+    await db.seat.update({ where: { id: sold.id }, data: { status: SeatStatus.SOLD } });
+    const now = new Date();
+
+    const result = await claimSeatsBatch({ runId: run.id, sessionId: freshSessionId(), count: 10, now });
+
+    expect(result.claimedSeatIds).toEqual([available.id]);
+  });
+
+  it("returns immediately with no DB writes when count is 0", async () => {
+    const run = await createRun();
+    await createSeats(run.id, run.concertId, 2);
+
+    const result = await claimSeatsBatch({ runId: run.id, sessionId: freshSessionId(), count: 0, now: new Date() });
+
+    expect(result.claimedSeatIds).toEqual([]);
+    const heldCount = await db.seat.count({ where: { simulationRunId: run.id, status: SeatStatus.HELD } });
+    expect(heldCount).toBe(0);
+  });
+
+  it("under concurrent batches racing the same pool, no seat is claimed twice (FOR UPDATE SKIP LOCKED)", async () => {
+    const run = await createRun();
+    await createSeats(run.id, run.concertId, 20);
+    const now = new Date();
+
+    const [a, b] = await Promise.all([
+      claimSeatsBatch({ runId: run.id, sessionId: "batch-a", count: 15, now }),
+      claimSeatsBatch({ runId: run.id, sessionId: "batch-b", count: 15, now }),
+    ]);
+
+    // Together they can't exceed the 20-seat pool, and no id appears in both.
+    const combined = [...a.claimedSeatIds, ...b.claimedSeatIds];
+    expect(combined.length).toBeLessThanOrEqual(20);
+    expect(new Set(combined).size).toBe(combined.length);
+
+    const heldCount = await db.seat.count({ where: { simulationRunId: run.id, status: SeatStatus.HELD } });
+    expect(heldCount).toBe(combined.length);
   });
 });
 

@@ -234,13 +234,78 @@ export async function listSeatMap(params: {
   return seats.map((seat) => ({ id: seat.id, row: seat.row, number: seat.number, status: seat.status }));
 }
 
-function shuffledCopy<T>(items: T[]): T[] {
-  const copy = [...items];
-  for (let i = copy.length - 1; i > 0; i--) {
-    const j = Math.floor(Math.random() * (i + 1));
-    [copy[i], copy[j]] = [copy[j], copy[i]];
-  }
-  return copy;
+export interface ClaimSeatsBatchResult {
+  claimedSeatIds: string[];
+}
+
+/**
+ * D-20: atomically claims up to `count` AVAILABLE seats for a run in a
+ * single round trip, for the bot's tick-time claims (runSeatMapTick) —
+ * replaces the old one-claimSeat()-call-per-seat loop, which meant a
+ * single poll's claimCount (up to tens of thousands at high elapsed under
+ * the old linear formula, D-18) issued that many sequential DB round trips
+ * and could take tens of seconds (measured 23.6s for one GET /api/seats at
+ * elapsedSeconds=60, D-18/D-20).
+ *
+ * `SELECT ... FOR UPDATE SKIP LOCKED` inside the CTE takes row locks on up
+ * to `count` AVAILABLE seats, skipping (not blocking on) any row a
+ * concurrent transaction already has locked — including a real user's
+ * single-seat claimSeat() (POST /api/seats), whose own `UPDATE ... WHERE
+ * id=$1 AND status='AVAILABLE'` takes the same kind of row lock. So a user
+ * claim racing this batch is safe either way: if the user's transaction
+ * already locked the row, this batch skips it and claims a different seat
+ * instead of blocking or double-claiming; if this batch locked it first,
+ * the user's UPDATE simply matches zero rows (existing SEAT_ALREADY_TAKEN
+ * path in claimSeat, unchanged). The outer UPDATE only ever touches rows
+ * the CTE actually selected, so no seat can be claimed twice. F006's
+ * atomicity guarantee for the user-facing claim path is untouched by this
+ * function — it's a separate query, not a shared code path.
+ *
+ * Only the seat *selection* is randomized here (ORDER BY random(), same as
+ * the old shuffledCopy) — F007's determinism requirement is about
+ * `computeBotClaimCount`/advanceTick's claimCount for a given
+ * (elapsed, botIntensity, availableSeatCount), which this function doesn't
+ * touch; which specific seats end up claimed was never part of that
+ * contract.
+ *
+ * `LIMIT count` combined with the AVAILABLE filter means this naturally
+ * caps at however many seats actually exist when the query runs (same
+ * "claim fewer if the pool is smaller than expected" behavior the old
+ * per-seat loop had via running out of candidates) — no separate cap logic
+ * needed.
+ */
+export async function claimSeatsBatch(params: {
+  runId: string;
+  sessionId: string;
+  count: number;
+  now: Date;
+}): Promise<ClaimSeatsBatchResult> {
+  const { runId, sessionId, count, now } = params;
+  if (count <= 0) return { claimedSeatIds: [] };
+
+  return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ClaimSeatsBatchResult> => {
+    const claimed = await tx.$queryRaw<Array<{ id: string }>>`
+      WITH candidates AS (
+        SELECT id FROM "Seat"
+        WHERE "simulationRunId" = ${runId} AND status = 'AVAILABLE'
+        ORDER BY random()
+        LIMIT ${count}
+        FOR UPDATE SKIP LOCKED
+      )
+      UPDATE "Seat" SET status = 'HELD'
+      WHERE id IN (SELECT id FROM candidates)
+      RETURNING id
+    `;
+
+    if (claimed.length > 0) {
+      const expiresAt = new Date(now.getTime() + HOLD_DURATION_MS);
+      await tx.hold.createMany({
+        data: claimed.map((seat) => ({ seatId: seat.id, sessionId, expiresAt })),
+      });
+    }
+
+    return { claimedSeatIds: claimed.map((seat) => seat.id) };
+  });
 }
 
 export interface SeatMapTickResult {
@@ -252,10 +317,9 @@ export interface SeatMapTickResult {
  * One GET /api/seats poll's worth of tick work, in order: (1) mark any
  * expired holds as no longer active (does NOT free their seats — D-5), (2)
  * advanceTick (Task 007) against the current available count to get the
- * bot's claimCount, (3) execute that many real claimSeat() calls against
- * random available seats under the bot's sessionId. Each claim is
- * independently atomic, so a claim racing a concurrent user claim on the
- * same seat is safe — the loser just finds nothing left when its turn comes.
+ * bot's claimCount, (3) claim that many random available seats under the
+ * bot's sessionId via one batched claimSeatsBatch() call (D-20) instead of
+ * claimCount individual round trips.
  */
 export async function runSeatMapTick(params: { runId: string; now: Date }): Promise<SeatMapTickResult> {
   const { runId, now } = params;
@@ -269,19 +333,7 @@ export async function runSeatMapTick(params: { runId: string; now: Date }): Prom
 
   const claimCount = tickResult.botClaim.claimCount;
   if (claimCount > 0) {
-    const availableSeats = await prisma.seat.findMany({
-      where: { simulationRunId: runId, status: SeatStatus.AVAILABLE },
-      select: { id: true },
-    });
-    const candidates = shuffledCopy(availableSeats.map((seat) => seat.id));
-    const botId = botSessionId(runId);
-
-    let claimed = 0;
-    for (const seatId of candidates) {
-      if (claimed >= claimCount) break;
-      const result = await claimSeat({ seatId, sessionId: botId, now });
-      if (result.status === "held") claimed++;
-    }
+    await claimSeatsBatch({ runId, sessionId: botSessionId(runId), count: claimCount, now });
   }
 
   return { botClaim: tickResult.botClaim, expiredSeatIds: expired.expiredSeatIds };
