@@ -1,16 +1,20 @@
 // Tick orchestrator (Task 007) — the "caller" lib/simulation.ts's pure
 // functions defer DB I/O to.
-import { prisma } from "@/lib/db";
 import type { Prisma } from "@/lib/generated/prisma/client";
-import { Tier } from "@/lib/types";
+import { SeatStatus, Tier } from "@/lib/types";
 import { computeBotClaimCount, computeElapsedTime, type BotClaimResult } from "@/lib/simulation";
 
 export interface AdvanceTickParams {
   runId: string;
   /** caller-supplied "current" time — never Date.now() internally, mirrors lib/simulation.ts's purity contract */
   now: Date;
-  /** count of currently-AVAILABLE seats for this run, for capping bot claims */
-  availableSeatCount: number;
+  /**
+   * The transaction this tick's SimulationRun lock and availableSeatCount
+   * read must run in — see the concurrency note below. Always the same
+   * transaction the caller (lib/seats.ts's runSeatMapTick) also executes
+   * its claimSeatsBatch call in, never a fresh one opened here.
+   */
+  tx: Prisma.TransactionClient;
 }
 
 export interface AdvanceTickResult {
@@ -39,39 +43,50 @@ export interface AdvanceTickResult {
  * function now) rather than being migrated away, to keep this change
  * scoped to the claim formula — see ROADMAP D-21.
  *
- * Concurrency note: still locks the SimulationRun row (`SELECT ... FOR
- * UPDATE`) for consistency with the rest of the tick pipeline, but
- * `availableSeatCount` is read by the caller before this transaction
- * starts (unchanged from pre-D-21), so two truly concurrent ticks for the
- * same run can each compute against a slightly stale availableSeatCount
- * and together overshoot the target — a known, accepted gap (D-21), not
- * present in the old model's stricter serialization, but out of scope
- * here since it would require restructuring the caller/callee boundary
- * D-20 (claimSeatsBatch) deliberately left alone.
+ * D-22 concurrency fix: locks the SimulationRun row (`SELECT ... FOR
+ * UPDATE`) *and* reads availableSeatCount from inside that same locked
+ * transaction (previously the caller read availableSeatCount before this
+ * function's own separate transaction even began, D-21). Two real
+ * concurrent ticks for the same run (confirmed to happen in practice —
+ * React Strict Mode's dev-only double-invoke fires two overlapping GET
+ * /api/seats requests on every zone entry, and any two-tab session does
+ * the same in production) now serialize on this row lock: the second
+ * tick blocks until the first's transaction — which also executes its
+ * claimSeatsBatch call before committing, see runSeatMapTick — fully
+ * commits, then re-reads availableSeatCount reflecting the first tick's
+ * claim. Measured to eliminate the overshoot entirely (see ROADMAP D-22;
+ * previously measured at up to 2x the intended target, e.g. 14,800
+ * claimed against a 7,400 target for MEGA at elapsed=20s).
  */
 export async function advanceTick(params: AdvanceTickParams): Promise<AdvanceTickResult> {
-  const { runId, now, availableSeatCount } = params;
+  const { runId, now, tx } = params;
 
-  return prisma.$transaction(async (tx: Prisma.TransactionClient) => {
-    const rows = await tx.$queryRaw<Array<{ queueOpenAt: Date; tier: Tier }>>`
-      SELECT "queueOpenAt", "tier" FROM "SimulationRun" WHERE id = ${runId} FOR UPDATE
-    `;
-    const run = rows[0];
-    if (!run) {
-      throw new Error(`advanceTick: SimulationRun not found: ${runId}`);
-    }
+  const rows = await tx.$queryRaw<Array<{ queueOpenAt: Date; tier: Tier }>>`
+    SELECT "queueOpenAt", "tier" FROM "SimulationRun" WHERE id = ${runId} FOR UPDATE
+  `;
+  const run = rows[0];
+  if (!run) {
+    throw new Error(`advanceTick: SimulationRun not found: ${runId}`);
+  }
 
-    const config = await tx.simulationConfig.findUniqueOrThrow({ where: { tier: run.tier } });
-    const poolSize = config.seatRows * config.seatsPerRow;
+  const config = await tx.simulationConfig.findUniqueOrThrow({ where: { tier: run.tier } });
+  const poolSize = config.seatRows * config.seatsPerRow;
 
-    const elapsedSinceOpen = computeElapsedTime({ since: run.queueOpenAt, now });
-    const botClaim = computeBotClaimCount({
-      elapsedSinceOpen,
-      botCurveK: config.botCurveK,
-      poolSize,
-      availableSeatCount,
-    });
-
-    return { runId, queueOpenAt: run.queueOpenAt, elapsedSeconds: elapsedSinceOpen.seconds, botClaim };
+  // Read strictly after the FOR UPDATE lock above — a concurrent tick
+  // blocked on that lock only reaches this line once it's unblocked, by
+  // which point the previous tick's claim has already committed, so this
+  // read always reflects it.
+  const availableSeatCount = await tx.seat.count({
+    where: { simulationRunId: runId, status: SeatStatus.AVAILABLE },
   });
+
+  const elapsedSinceOpen = computeElapsedTime({ since: run.queueOpenAt, now });
+  const botClaim = computeBotClaimCount({
+    elapsedSinceOpen,
+    botCurveK: config.botCurveK,
+    poolSize,
+    availableSeatCount,
+  });
+
+  return { runId, queueOpenAt: run.queueOpenAt, elapsedSeconds: elapsedSinceOpen.seconds, botClaim };
 }

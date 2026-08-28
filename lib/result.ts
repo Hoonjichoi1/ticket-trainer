@@ -40,6 +40,13 @@ export function determineOutcome(params: { hasBooking: boolean; events: Judgment
  * derived from a formula — a starting point for tuning, not a precise
  * calibration.
  */
+// maxContentionLosses checked empirically against D-21's exponential bot
+// model (D-22): a realistic single-attempt-per-poll user rarely sees more
+// than 0-1 contentionLosses across all 3 tiers and the full elapsed range
+// (scripts/_contention-losses-probe-tmp.ts), never exceeding these
+// thresholds — still accurate when it fires, just a low-frequency feedback
+// path under the new model. Left as-is; see ROADMAP D-22 for the measured
+// distribution.
 export const TIER_BENCHMARKS: Record<Tier, { targetTotalMs: number; maxContentionLosses: number }> = {
   [Tier.SMALL]: { targetTotalMs: 90_000, maxContentionLosses: 1 },
   [Tier.MEDIUM]: { targetTotalMs: 150_000, maxContentionLosses: 3 },

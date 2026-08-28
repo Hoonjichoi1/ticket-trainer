@@ -33,6 +33,8 @@ afterEach(async () => {
   }
   if (createdRunIds.length > 0) {
     await db.queueEntry.deleteMany({ where: { simulationRunId: { in: createdRunIds } } });
+    await db.hold.deleteMany({ where: { seat: { simulationRunId: { in: createdRunIds } } } });
+    await db.seat.deleteMany({ where: { simulationRunId: { in: createdRunIds } } });
     await db.simulationRun.deleteMany({ where: { id: { in: createdRunIds } } });
   }
   if (createdConcertIds.length > 0) {
@@ -203,18 +205,49 @@ describe("POST /api/dev/timewarp", () => {
     expect(json.code).toBe("AMBIGUOUS_QUEUE_PARAMS");
   });
 
-  it("lastTickRewindMs sets SimulationRun.lastTickAt to now - lastTickRewindMs, observed by advanceTick", async () => {
+  it("lastTickRewindMs sets SimulationRun.lastTickAt to now - lastTickRewindMs, but no longer affects advanceTick's claim (D-21)", async () => {
     const sessionId = await establishSession();
-    const run = await createActiveRun(sessionId, { tier: Tier.MEGA }); // botIntensity 0.8
+    const run = await createActiveRun(sessionId, { tier: Tier.MEGA });
 
     const res = await POST(jsonRequest({ lastTickRewindMs: 60_000 }));
     expect(res.status).toBe(200);
     const json = await res.json();
     expect(json.simulationRun.applied).toBe(true);
 
+    const persisted = await db.simulationRun.findUniqueOrThrow({ where: { id: run.id } });
+    expect(persisted.lastTickAt.getTime()).toBeLessThanOrEqual(Date.now() - 59_000);
+
+    // D-21: advanceTick now measures elapsed from queueOpenAt, not
+    // lastTickAt — queueOpenAt is untouched here (still ~now, from
+    // createActiveRun's default), so elapsed is ~0 and the claim is 0
+    // regardless of the lastTickAt rewind above.
     const { advanceTick } = await import("@/lib/tick");
-    const tick = await advanceTick({ runId: run.id, now: new Date(), availableSeatCount: 100 });
-    // ~60s elapsed * botIntensity 0.8 -> ~48 claimed, well above 0.
+    const { prisma } = await import("@/lib/db");
+    const tick = await prisma.$transaction((tx) => advanceTick({ runId: run.id, now: new Date(), tx }));
+    expect(tick.botClaim.claimCount).toBe(0);
+  });
+
+  it("openInMs (rewinding queueOpenAt) is what now drives advanceTick's claim, per D-21", async () => {
+    const sessionId = await establishSession();
+    const run = await createActiveRun(sessionId, { tier: Tier.MEGA });
+    // D-22: advanceTick reads availableSeatCount from real Seat rows now —
+    // this tiny 1-seat fixture is far below MEGA's real configured
+    // poolSize (15,000), so a merely-large rewind (e.g. 60s) isn't enough:
+    // computeBotClaimCount infers ~15,000 already claimed (poolSize minus
+    // this fixture's availableSeatCount) and floors the claim to 0. A
+    // saturating rewind (curve target ~= poolSize regardless of k) sidesteps
+    // the mismatch, same pattern as lib/seats.test.ts's SATURATING_ELAPSED_MS.
+    await db.seat.create({ data: { concertId: run.concertId, simulationRunId: run.id, row: "1", number: 1 } });
+    const SATURATING_REWIND_MS = 100_000_000; // ~3.2 years
+
+    const res = await POST(jsonRequest({ openInMs: -SATURATING_REWIND_MS }));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.queueOpen.applied).toBe(true);
+
+    const { advanceTick } = await import("@/lib/tick");
+    const { prisma } = await import("@/lib/db");
+    const tick = await prisma.$transaction((tx) => advanceTick({ runId: run.id, now: new Date(), tx }));
     expect(tick.botClaim.claimCount).toBeGreaterThan(0);
   });
 

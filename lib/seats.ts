@@ -245,7 +245,9 @@ export interface ClaimSeatsBatchResult {
  * single poll's claimCount (up to tens of thousands at high elapsed under
  * the old linear formula, D-18) issued that many sequential DB round trips
  * and could take tens of seconds (measured 23.6s for one GET /api/seats at
- * elapsedSeconds=60, D-18/D-20).
+ * elapsedSeconds=60, D-18/D-20). Still used unchanged after D-21's
+ * front-loaded curve replaced the claim-count formula — only "how many"
+ * changed, not "how to claim them".
  *
  * `SELECT ... FOR UPDATE SKIP LOCKED` inside the CTE takes row locks on up
  * to `count` AVAILABLE seats, skipping (not blocking on) any row a
@@ -264,7 +266,7 @@ export interface ClaimSeatsBatchResult {
  * Only the seat *selection* is randomized here (ORDER BY random(), same as
  * the old shuffledCopy) — F007's determinism requirement is about
  * `computeBotClaimCount`/advanceTick's claimCount for a given
- * (elapsed, botIntensity, availableSeatCount), which this function doesn't
+ * (elapsedSinceOpen, botCurveK, poolSize), which this function doesn't
  * touch; which specific seats end up claimed was never part of that
  * contract.
  *
@@ -273,17 +275,25 @@ export interface ClaimSeatsBatchResult {
  * "claim fewer if the pool is smaller than expected" behavior the old
  * per-seat loop had via running out of candidates) — no separate cap logic
  * needed.
+ *
+ * D-22: accepts an optional `tx` so runSeatMapTick can run this inside the
+ * same transaction as advanceTick's SimulationRun lock (closing the
+ * concurrent-tick overshoot race — see lib/tick.ts's advanceTick doc
+ * comment and ROADMAP D-22). Falls back to opening its own transaction
+ * when called standalone (e.g. directly from a test, or any future caller
+ * that doesn't need the combined lock).
  */
 export async function claimSeatsBatch(params: {
   runId: string;
   sessionId: string;
   count: number;
   now: Date;
+  tx?: Prisma.TransactionClient;
 }): Promise<ClaimSeatsBatchResult> {
   const { runId, sessionId, count, now } = params;
   if (count <= 0) return { claimedSeatIds: [] };
 
-  return prisma.$transaction(async (tx: Prisma.TransactionClient): Promise<ClaimSeatsBatchResult> => {
+  const exec = async (tx: Prisma.TransactionClient): Promise<ClaimSeatsBatchResult> => {
     const claimed = await tx.$queryRaw<Array<{ id: string }>>`
       WITH candidates AS (
         SELECT id FROM "Seat"
@@ -305,7 +315,10 @@ export async function claimSeatsBatch(params: {
     }
 
     return { claimedSeatIds: claimed.map((seat) => seat.id) };
-  });
+  };
+
+  if (params.tx) return exec(params.tx);
+  return prisma.$transaction(exec);
 }
 
 export interface SeatMapTickResult {
@@ -316,25 +329,34 @@ export interface SeatMapTickResult {
 /**
  * One GET /api/seats poll's worth of tick work, in order: (1) mark any
  * expired holds as no longer active (does NOT free their seats — D-5), (2)
- * advanceTick (Task 007) against the current available count to get the
- * bot's claimCount, (3) claim that many random available seats under the
- * bot's sessionId via one batched claimSeatsBatch() call (D-20) instead of
- * claimCount individual round trips.
+ * advanceTick (Task 007) and (3) the bot's claimSeatsBatch() call (D-20),
+ * both inside one transaction (D-22).
+ *
+ * D-22: advanceTick's SimulationRun row lock and its availableSeatCount
+ * read, plus the actual claim write, must all happen inside the same
+ * transaction — otherwise two real concurrent ticks for the same run (D-22
+ * confirmed this isn't just theoretical: React Strict Mode's dev-only
+ * double-invoke fires two overlapping polls on every zone entry, and any
+ * two-tab session does the same in prod) each compute their claimCount
+ * against a stale availableSeatCount and together overshoot the curve's
+ * target — measured at up to 2x for MEGA at moderate elapsed. See
+ * lib/tick.ts's advanceTick doc comment and ROADMAP D-22.
  */
 export async function runSeatMapTick(params: { runId: string; now: Date }): Promise<SeatMapTickResult> {
   const { runId, now } = params;
 
   const expired = await expireStaleHolds({ runId, now });
 
-  const availableSeatCount = await prisma.seat.count({
-    where: { simulationRunId: runId, status: SeatStatus.AVAILABLE },
-  });
-  const tickResult = await advanceTick({ runId, now, availableSeatCount });
+  const tickResult = await prisma.$transaction(async (tx: Prisma.TransactionClient) => {
+    const tickResult = await advanceTick({ runId, now, tx });
 
-  const claimCount = tickResult.botClaim.claimCount;
-  if (claimCount > 0) {
-    await claimSeatsBatch({ runId, sessionId: botSessionId(runId), count: claimCount, now });
-  }
+    const claimCount = tickResult.botClaim.claimCount;
+    if (claimCount > 0) {
+      await claimSeatsBatch({ runId, sessionId: botSessionId(runId), count: claimCount, now, tx });
+    }
+
+    return tickResult;
+  });
 
   return { botClaim: tickResult.botClaim, expiredSeatIds: expired.expiredSeatIds };
 }

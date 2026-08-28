@@ -45,18 +45,20 @@ function freshSessionId(): string {
   return id;
 }
 
-async function createRun(opts: { tier?: Tier; lastTickAt?: Date } = {}) {
+async function createRun(opts: { tier?: Tier; queueOpenAt?: Date } = {}) {
   const concert = await db.concert.create({
     data: { title: "seats-test-concert", venue: "seats-test-venue", openAt: new Date("2000-01-01T00:00:00.000Z") },
   });
   createdConcertIds.push(concert.id);
 
+  // D-21: queueOpenAt (not lastTickAt) is the fixed anchor computeBotClaimCount
+  // measures elapsed from — see lib/tick.ts.
   const run = await db.simulationRun.create({
     data: {
       concertId: concert.id,
       sessionId: `seats-test-owner-${crypto.randomUUID()}`,
       tier: opts.tier ?? Tier.SMALL,
-      lastTickAt: opts.lastTickAt ?? new Date("2026-01-01T00:00:00.000Z"),
+      queueOpenAt: opts.queueOpenAt ?? new Date("2026-01-01T00:00:00.000Z"),
     },
   });
   createdRunIds.push(run.id);
@@ -406,24 +408,38 @@ describe("claimSeatsBatch", () => {
 });
 
 describe("runSeatMapTick", () => {
-  it("claims exactly the bot's computed claim count of available seats under the bot sessionId", async () => {
+  // D-21: computeBotClaimCount's target is anchored on the tier's
+  // *configured* poolSize (SimulationConfig.seatRows * seatsPerRow — 2,500
+  // for SMALL, 15,000 for MEGA), not on how many Seat rows a test actually
+  // creates. A small fixture pool (10 seats, 1 seat) reads as "almost
+  // everything already gone" against that much larger nominal poolSize, so
+  // a merely-large elapsed (as the old linear-model tests used) wouldn't
+  // reliably clear that gap. A saturating elapsed (curve target ≈
+  // poolSize for any tier's k) sidesteps this: at that point the bot's
+  // target covers the whole configured pool, so it claims everything
+  // actually AVAILABLE in the test's small fixture, regardless of the
+  // mismatch.
+  const SATURATING_ELAPSED_MS = 100_000_000; // ~3.2 years — target ≈ poolSize for every tier's botCurveK
+
+  it("claims every AVAILABLE seat once the depletion curve has saturated, under the bot sessionId", async () => {
     const t0 = new Date("2026-01-01T00:00:00.000Z");
-    const run = await createRun({ tier: Tier.SMALL, lastTickAt: t0 }); // SMALL botIntensity 0.1
+    const run = await createRun({ tier: Tier.SMALL, queueOpenAt: t0 });
     await createSeats(run.id, run.concertId, 10);
-    const now = new Date(t0.getTime() + 10_000); // floor(0.1 * 10) = 1 claim
+    const now = new Date(t0.getTime() + SATURATING_ELAPSED_MS);
 
     const result = await runSeatMapTick({ runId: run.id, now });
 
-    expect(result.botClaim.claimCount).toBe(1);
+    expect(result.botClaim.claimCount).toBe(10);
     const heldSeats = await db.seat.findMany({ where: { simulationRunId: run.id, status: SeatStatus.HELD } });
-    expect(heldSeats).toHaveLength(1);
-    const hold = await db.hold.findFirstOrThrow({ where: { seatId: heldSeats[0].id } });
-    expect(hold.sessionId).toBe(botSessionId(run.id));
+    expect(heldSeats).toHaveLength(10);
+    const holds = await db.hold.findMany({ where: { seatId: { in: heldSeats.map((s) => s.id) } } });
+    expect(holds).toHaveLength(10);
+    for (const hold of holds) expect(hold.sessionId).toBe(botSessionId(run.id));
   });
 
   it("marks an expired hold's Hold row but does NOT free its seat for the bot to reclaim (D-5)", async () => {
     const t0 = new Date("2026-01-01T00:00:00.000Z");
-    const run = await createRun({ tier: Tier.MEGA, lastTickAt: t0 }); // MEGA botIntensity 0.8
+    const run = await createRun({ tier: Tier.MEGA, queueOpenAt: t0 });
     const userSessionId = freshSessionId();
     const { seat, hold } = await createHeldSeat({
       runId: run.id,
@@ -431,13 +447,13 @@ describe("runSeatMapTick", () => {
       sessionId: userSessionId,
       expiresAt: new Date(t0.getTime() - 1000), // already expired as of t0
     });
-    const now = new Date(t0.getTime() + 3_600_000); // huge elapsed, but no seats are AVAILABLE
+    const now = new Date(t0.getTime() + SATURATING_ELAPSED_MS); // huge elapsed, but no seats are AVAILABLE
 
     const result = await runSeatMapTick({ runId: run.id, now });
 
     expect(result.expiredSeatIds).toEqual([seat.id]);
     // Only seat in the run stays HELD by its original owner — no AVAILABLE
-    // seats exist for the bot to claim, regardless of elapsed time/intensity.
+    // seats exist for the bot to claim, regardless of elapsed time/curve.
     expect(result.botClaim.claimCount).toBe(0);
     const persistedSeat = await db.seat.findUniqueOrThrow({ where: { id: seat.id } });
     expect(persistedSeat.status).toBe(SeatStatus.HELD);
@@ -446,11 +462,53 @@ describe("runSeatMapTick", () => {
     expect(persistedHold.releasedAt?.getTime()).toBe(now.getTime());
   });
 
+  it("under two concurrent ticks racing the same run (React Strict Mode double-invoke, or two tabs), the combined bot claim does not overshoot the curve's target for that elapsed", async () => {
+    const t0 = new Date("2026-01-01T00:00:00.000Z");
+    const run = await createRun({ tier: Tier.SMALL, queueOpenAt: t0 });
+
+    const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier: Tier.SMALL } });
+    const poolSize = config.seatRows * config.seatsPerRow;
+    // Real full-size pool (not a small fixture) — a smaller fixture would
+    // let claimSeatsBatch's own AVAILABLE-row cap mask the race (both
+    // ticks would just split whatever's left), so this needs enough real
+    // headroom for two independently-computed claims to actually overshoot
+    // if unfixed.
+    const rowLabels = Array.from({ length: config.seatRows }, (_, i) => String(i + 1));
+    await db.seat.createMany({
+      data: rowLabels.flatMap((row) =>
+        Array.from({ length: config.seatsPerRow }, (_, i) => ({
+          concertId: run.concertId,
+          simulationRunId: run.id,
+          row,
+          number: i + 1,
+        })),
+      ),
+    });
+
+    // Elapsed chosen so the curve's target is ~25% of the pool: enough gap
+    // below poolSize that two concurrent claims of ~25% each (50% combined)
+    // stay well under 100%, so an unfixed race's overshoot wouldn't be
+    // masked by simply running out of AVAILABLE seats.
+    const targetFraction = 0.25;
+    const rawElapsedSeconds = -Math.log(1 - targetFraction) / config.botCurveK;
+    const now = new Date(t0.getTime() + rawElapsedSeconds * 1000);
+    // Mirrors computeElapsedTime's own ms->seconds rounding (lib/simulation.ts)
+    // so this matches exactly what advanceTick will compute, not the
+    // pre-rounding float above.
+    const actualElapsedSeconds = (now.getTime() - t0.getTime()) / 1000;
+    const expectedTarget = Math.floor(poolSize * (1 - Math.exp(-config.botCurveK * actualElapsedSeconds)));
+
+    await Promise.all([runSeatMapTick({ runId: run.id, now }), runSeatMapTick({ runId: run.id, now })]);
+
+    const heldCount = await db.seat.count({ where: { simulationRunId: run.id, status: SeatStatus.HELD } });
+    expect(heldCount).toBe(expectedTarget);
+  });
+
   it("bot-vs-user contention: racing runSeatMapTick against a direct user claimSeat on the run's single seat, exactly one wins", async () => {
     const t0 = new Date("2026-01-01T00:00:00.000Z");
-    const run = await createRun({ tier: Tier.MEGA, lastTickAt: t0 }); // MEGA botIntensity 0.8 -> claims fast
+    const run = await createRun({ tier: Tier.MEGA, queueOpenAt: t0 });
     const [seat] = await createSeats(run.id, run.concertId, 1);
-    const now = new Date(t0.getTime() + 60_000); // plenty of elapsed time, capped at the 1 available seat
+    const now = new Date(t0.getTime() + SATURATING_ELAPSED_MS); // curve fully saturated -> bot attempts the one available seat
     const userSessionId = freshSessionId();
 
     const [tickResult, userClaim] = await Promise.all([
