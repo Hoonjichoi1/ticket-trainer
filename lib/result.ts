@@ -35,8 +35,8 @@ export function determineOutcome(params: { hasBooking: boolean; events: Judgment
  * Initial per-tier targets for the "소요 시간·패배 횟수를 티어별 기준치와
  * 비교" PRD requirement. SimulationConfig has no benchmark-style field
  * (only simulation coefficients: arrivalRatePerSec/admissionRatePerSec/
- * botIntensity/errorRate/latencyMs), so these live here as their own
- * constant, loosely scaled to each tier's botIntensity/errorRate. Not
+ * botCurveK/errorRate/latencyMs), so these live here as their own
+ * constant, loosely scaled to each tier's botCurveK/errorRate. Not
  * derived from a formula — a starting point for tuning, not a precise
  * calibration.
  */

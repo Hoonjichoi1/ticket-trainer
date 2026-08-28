@@ -87,14 +87,26 @@ export function resolveQueueOpenAt(openAt: Date, now: Date): Date {
 }
 
 // ---------------------------------------------------------------------
-// Bot claim count (F008 prep) — TODO: implement
+// Bot claim count (F008) — D-21: front-loaded exponential-approach curve
 // ---------------------------------------------------------------------
 export interface BotClaimInput {
-  /** computeElapsedTime({ since: SimulationRun.lastTickAt, now }) */
-  elapsed: ElapsedTime;
-  /** SimulationConfig.botIntensity for this run's tier */
-  botIntensity: number;
-  /** count of currently-AVAILABLE seats, for capping when seats run short */
+  /**
+   * computeElapsedTime({ since: SimulationRun.queueOpenAt, now }) — total
+   * elapsed since the sale was considered open for this run, NOT since the
+   * last tick. D-21's curve needs a single fixed anchor: it computes an
+   * ABSOLUTE cumulative depletion target for elapsed t, not a per-tick
+   * increment, so the same t must always mean the same point on the curve
+   * regardless of how many ticks have fired or how they were spaced. A
+   * "since last tick" delta (the pre-D-21 model) can't give that — the same
+   * delta could land at very different points on a nonlinear curve
+   * depending on tick history, breaking F007 determinism in practice.
+   */
+  elapsedSinceOpen: ElapsedTime;
+  /** SimulationConfig.botCurveK for this run's tier — exponential curve steepness (1/sec); higher = faster early depletion */
+  botCurveK: number;
+  /** total seats in this run's pool (SimulationConfig.seatRows * seatsPerRow) */
+  poolSize: number;
+  /** count of currently-AVAILABLE seats — used both to cap this tick's claim and (via poolSize - availableSeatCount) to know how much of the target is already met */
   availableSeatCount: number;
 }
 
@@ -104,12 +116,27 @@ export interface BotClaimResult {
 }
 
 /**
- * claimCount = floor(botIntensity * elapsed.seconds), capped at
- * availableSeatCount. Actual claim execution (which seats, via the same
- * hold transaction users use) happens later — this only returns a count.
+ * D-21: real ticketing sells out fastest in the first seconds after
+ * opening and tapers off afterward (research behind the decision: Super
+ * Show 6 Seoul sold out in ~9 minutes, Jannabi concerts sell out
+ * instantly) — the previous linear model (claimCount = botIntensity *
+ * elapsed) had it backwards: loose early, steepening only as elapsed grew.
+ *
+ * targetClaimed(t) = floor(poolSize * (1 - e^(-botCurveK * t))) is the
+ * ABSOLUTE cumulative depletion target at elapsed t seconds since
+ * queueOpenAt (see BotClaimInput.elapsedSinceOpen for why an absolute
+ * anchor, not a per-tick delta, is required for determinism here).
+ * claimCount this tick is just the gap between that target and what's
+ * already gone (poolSize - availableSeatCount) — zero or negative gaps
+ * (already at/above target, e.g. from the run's one real user claiming
+ * ahead of the curve) claim nothing.
  */
 export function computeBotClaimCount(input: BotClaimInput): BotClaimResult {
-  const rawCount = Math.floor(input.botIntensity * input.elapsed.seconds);
+  const alreadyClaimed = Math.max(0, input.poolSize - input.availableSeatCount);
+  const targetClaimed = Math.floor(
+    input.poolSize * (1 - Math.exp(-input.botCurveK * input.elapsedSinceOpen.seconds)),
+  );
+  const rawCount = targetClaimed - alreadyClaimed;
   const claimCount = Math.min(Math.max(0, rawCount), input.availableSeatCount);
   return { claimCount };
 }

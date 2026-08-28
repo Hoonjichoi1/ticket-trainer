@@ -20,39 +20,55 @@ describe("computeElapsedTime", () => {
   });
 });
 
-describe("computeBotClaimCount", () => {
-  it("floors botIntensity * elapsed.seconds", () => {
+describe("computeBotClaimCount (D-21: front-loaded exponential-approach curve)", () => {
+  it("targets floor(poolSize * (1 - e^-(k*elapsedSinceOpen))), minus seats already claimed", () => {
     const result = computeBotClaimCount({
-      elapsed: { ms: 10000, seconds: 10 },
-      botIntensity: 0.35,
-      availableSeatCount: 100,
+      elapsedSinceOpen: { ms: 60_000, seconds: 60 },
+      botCurveK: 0.01,
+      poolSize: 1000,
+      availableSeatCount: 1000, // nothing claimed yet
     });
-    // 0.35 * 10 = 3.5 -> floor 3
-    expect(result.claimCount).toBe(3);
+    // target = floor(1000 * (1 - e^-0.6)) = floor(1000 * 0.451188...) = 451
+    expect(result.claimCount).toBe(451);
   });
 
-  it("returns 0 when elapsed is 0", () => {
+  it("returns 0 when elapsedSinceOpen is 0 (target is 0 regardless of k)", () => {
     const result = computeBotClaimCount({
-      elapsed: { ms: 0, seconds: 0 },
-      botIntensity: 0.8,
-      availableSeatCount: 100,
-    });
-    expect(result.claimCount).toBe(0);
-  });
-
-  it("returns 0 when botIntensity is 0, even with large elapsed", () => {
-    const result = computeBotClaimCount({
-      elapsed: { ms: 3_600_000, seconds: 3600 },
-      botIntensity: 0,
-      availableSeatCount: 100,
+      elapsedSinceOpen: { ms: 0, seconds: 0 },
+      botCurveK: 0.05,
+      poolSize: 1000,
+      availableSeatCount: 1000,
     });
     expect(result.claimCount).toBe(0);
   });
 
-  it("caps claimCount at availableSeatCount when intensity/elapsed is very large", () => {
+  it("returns 0 when botCurveK is 0, even with very large elapsed (curve never rises)", () => {
     const result = computeBotClaimCount({
-      elapsed: { ms: 3_600_000, seconds: 3600 },
-      botIntensity: 0.8,
+      elapsedSinceOpen: { ms: 3_600_000, seconds: 3600 },
+      botCurveK: 0,
+      poolSize: 1000,
+      availableSeatCount: 1000,
+    });
+    expect(result.claimCount).toBe(0);
+  });
+
+  it("only claims the gap to the target — seats already gone (poolSize - availableSeatCount) count toward it", () => {
+    // target at t=60,k=0.01 over pool 1000 is 451 (see first test). If 500
+    // are already gone (more than the target), there's no gap: claim 0.
+    const result = computeBotClaimCount({
+      elapsedSinceOpen: { ms: 60_000, seconds: 60 },
+      botCurveK: 0.01,
+      poolSize: 1000,
+      availableSeatCount: 500, // 500 already claimed
+    });
+    expect(result.claimCount).toBe(0);
+  });
+
+  it("caps claimCount at availableSeatCount when the target-minus-claimed gap exceeds what's left", () => {
+    const result = computeBotClaimCount({
+      elapsedSinceOpen: { ms: 3_600_000, seconds: 3600 }, // huge elapsed -> target ~poolSize
+      botCurveK: 0.05,
+      poolSize: 1000,
       availableSeatCount: 5,
     });
     expect(result.claimCount).toBe(5);
@@ -60,18 +76,66 @@ describe("computeBotClaimCount", () => {
 
   it("returns 0 when there are no available seats", () => {
     const result = computeBotClaimCount({
-      elapsed: { ms: 10000, seconds: 10 },
-      botIntensity: 0.8,
+      elapsedSinceOpen: { ms: 10_000, seconds: 10 },
+      botCurveK: 0.05,
+      poolSize: 1000,
       availableSeatCount: 0,
     });
     expect(result.claimCount).toBe(0);
   });
 
+  it("never exceeds poolSize as elapsed grows arbitrarily large", () => {
+    const result = computeBotClaimCount({
+      elapsedSinceOpen: { ms: 100_000_000, seconds: 100_000 },
+      botCurveK: 0.05,
+      poolSize: 1000,
+      availableSeatCount: 1000,
+    });
+    expect(result.claimCount).toBeLessThanOrEqual(1000);
+    // The curve should have essentially saturated by now.
+    expect(result.claimCount).toBeGreaterThan(990);
+  });
+
+  it("front-loads: the claim target for an early window is more than half the target for double that elapsed (steeper at the start)", () => {
+    const early = computeBotClaimCount({
+      elapsedSinceOpen: { ms: 15_000, seconds: 15 },
+      botCurveK: 0.034,
+      poolSize: 15_000,
+      availableSeatCount: 15_000,
+    });
+    const later = computeBotClaimCount({
+      elapsedSinceOpen: { ms: 30_000, seconds: 30 },
+      botCurveK: 0.034,
+      poolSize: 15_000,
+      availableSeatCount: 15_000,
+    });
+    // Linear would give exactly half; exponential-approach gives strictly more than half.
+    expect(early.claimCount).toBeGreaterThan(later.claimCount / 2);
+    expect(early.claimCount).toBeLessThan(later.claimCount);
+  });
+
   it("is deterministic: same input always yields same output", () => {
-    const input = { elapsed: { ms: 4200, seconds: 4.2 }, botIntensity: 0.4, availableSeatCount: 50 };
+    const input = {
+      elapsedSinceOpen: { ms: 4200, seconds: 4.2 },
+      botCurveK: 0.02,
+      poolSize: 2500,
+      availableSeatCount: 2000,
+    };
     const first = computeBotClaimCount(input);
     const second = computeBotClaimCount(input);
     expect(first).toEqual(second);
+  });
+
+  it("is deterministic across different tick histories: only elapsedSinceOpen (not how many prior ticks happened) determines the target", () => {
+    // Two different "already claimed" starting points that both happen to
+    // sit below the target at this elapsed converge to the same total
+    // claimed-by-now once each tops up to the target.
+    const config = { elapsedSinceOpen: { ms: 20_000, seconds: 20 }, botCurveK: 0.03, poolSize: 5000 };
+    const fromFewerTicks = computeBotClaimCount({ ...config, availableSeatCount: 5000 }); // 0 claimed so far
+    const fromMoreTicks = computeBotClaimCount({ ...config, availableSeatCount: 4900 }); // 100 already claimed by an earlier tick
+    const target = Math.floor(5000 * (1 - Math.exp(-0.03 * 20)));
+    expect(fromFewerTicks.claimCount).toBe(target);
+    expect(100 + fromMoreTicks.claimCount).toBe(target);
   });
 });
 

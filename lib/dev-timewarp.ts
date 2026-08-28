@@ -1,13 +1,21 @@
 // Dev/test-only time-warp utility (ROADMAP D-7). lib/simulation.ts's
 // tick-on-request math is a pure function of "now minus a stored
-// timestamp" (SimulationRun.queueOpenAt, QueueEntry.joinedAt,
-// SimulationRun.lastTickAt) — so rewriting those stored timestamps into
-// the past (or, for queueOpenAt, into the near future) reproduces
-// "already open" / "already near admission" states without waiting in
-// real time. This module never imports or touches lib/simulation.ts's
-// calculation logic — it only mutates the DB rows that logic reads.
-// Callers (app/api/dev/timewarp/route.ts) are responsible for the
-// NODE_ENV production gate; this module has no env check of its own.
+// timestamp" (SimulationRun.queueOpenAt, QueueEntry.joinedAt) — so
+// rewriting those stored timestamps into the past (or, for queueOpenAt,
+// into the near future) reproduces "already open" / "already near
+// admission" states without waiting in real time. This module never
+// imports or touches lib/simulation.ts's calculation logic — it only
+// mutates the DB rows that logic reads. Callers
+// (app/api/dev/timewarp/route.ts) are responsible for the NODE_ENV
+// production gate; this module has no env check of its own.
+//
+// D-21: bot-claim elapsed is now measured from queueOpenAt, not
+// lastTickAt (see lib/tick.ts) — `openInMs` (rewinding queueOpenAt into
+// the past) is what fast-forwards bot depletion for dev testing.
+// `lastTickRewindMs` still writes SimulationRun.lastTickAt (kept for
+// backward compatibility with any caller still passing it) but that
+// field is no longer read by the claim calculation, so it no longer has
+// any effect on bot claims.
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import { QueueEntryStatus } from "@/lib/types";

@@ -60,7 +60,16 @@ async function main() {
         tier: Tier.SMALL,
         arrivalRatePerSec: 5,
         admissionRatePerSec: 5,
-        botIntensity: 0.1,
+        // D-21: front-loaded depletion curve — claimCount = floor(poolSize
+        // * (1 - e^(-botCurveK * elapsedSinceOpen))), replacing the old
+        // linear botIntensity (see ROADMAP D-21 for the realism research
+        // behind this: real ticketing sells out fastest in the first
+        // seconds, not gradually accelerating). SMALL stays deliberately
+        // gentle (D-15's "beginner friendly" tier) — target ~15% depleted
+        // by 60s, ~28% by 120s. Starting value from
+        // scripts/tune-bot-intensity.ts's D-21 sweep; see ROADMAP D-21 for
+        // the measured table.
+        botCurveK: 0.0027,
         errorRate: 0.02,
         latencyMs: 50,
         // D-15 target seat scale: 25 rows x 100 seats/row = 2,500 seats, 8 zones.
@@ -72,7 +81,9 @@ async function main() {
         tier: Tier.MEDIUM,
         arrivalRatePerSec: 20,
         admissionRatePerSec: 20,
-        botIntensity: 0.4,
+        // D-21: target ~40% depleted by 60s, ~64% by 120s — moderate,
+        // between SMALL and MEGA. See ROADMAP D-21.
+        botCurveK: 0.0085,
         errorRate: 0.05,
         latencyMs: 150,
         // D-15 target seat scale: 70 rows x 100 seats/row = 7,000 seats, 15 zones.
@@ -88,16 +99,16 @@ async function main() {
         seatRows: 150,
         seatsPerRow: 100,
         zoneCount: 25,
-        // Empirically tuned (scripts/tune-bot-intensity.ts) against
-        // lib/result.ts's TIER_BENCHMARKS.MEGA.maxContentionLosses=6: with
-        // a fixed 200-seat pool, average contentionLosses only becomes
-        // non-negligible once the bot depletes most of the pool within the
-        // first ~2s tick (negative-hypergeometric collision odds), and that
-        // region sits close to a "seats sell out before the player gets
-        // one" cliff around botIntensity~100-110. 80 lands conservatively
-        // below the cliff (measured avg ~4.2 over 30 trials, no sellouts)
-        // rather than chasing the benchmark exactly.
-        botIntensity: 80,
+        // D-21: replaces D-16/D-18's linear botIntensity=220. Target ~40%
+        // depleted by 15s (real-ticketing-realistic early rush — see
+        // ROADMAP D-21's research), ~87% by 60s, ~98% by 120s. Individual
+        // zones (300-600 seats) reaching literal sellout well before the
+        // whole pool does is expected and desired (D-21 flips the old
+        // "a zone must never sell out" premise) — the intended experience
+        // is hopping to another zone when one is dry, not guaranteed
+        // availability in every zone. See ROADMAP D-21 for the measured
+        // table across elapsed 0-120s.
+        botCurveK: 0.034,
         errorRate: 0.1,
         latencyMs: 400,
       },

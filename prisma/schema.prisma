@@ -165,7 +165,12 @@ model SimulationConfig {
   tier                Tier   @unique
   arrivalRatePerSec   Float
   admissionRatePerSec Float
-  botIntensity        Float
+  // D-21: exponential-approach depletion curve steepness (1/sec) —
+  // claimCount = floor(poolSize * (1 - e^(-botCurveK * elapsedSinceOpen))).
+  // Replaces the old linear botIntensity (seats/sec); renamed rather than
+  // reinterpreted in place since the unit/scale is completely different
+  // (botCurveK values are small, ~0.001-0.05, not seats/sec).
+  botCurveK           Float
   errorRate           Float
   latencyMs           Int
   seatRows            Int
