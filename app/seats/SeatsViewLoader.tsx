@@ -6,9 +6,7 @@ import { StepIndicator } from "@/app/components/StepIndicator";
 // `ssr: false` is only allowed inside a Client Component (per
 // node_modules/next/dist/docs/01-app/02-guides/lazy-loading.md) — this
 // file exists solely to host that call so app/seats/page.tsx can stay a
-// plain Server Component. SeatsView owns Math.random()-based dummy data
-// that must never be computed during SSR (see SeatsView.tsx's top
-// comment) or it hydration-mismatches on the "N/40 open" zone counts.
+// plain Server Component.
 const SeatsView = dynamic(() => import("./SeatsView"), {
   ssr: false,
   loading: () => (
@@ -21,6 +19,10 @@ const SeatsView = dynamic(() => import("./SeatsView"), {
   ),
 });
 
-export default function SeatsViewLoader() {
-  return <SeatsView />;
+interface SeatsViewLoaderProps {
+  zoneCount: number;
+}
+
+export default function SeatsViewLoader({ zoneCount }: SeatsViewLoaderProps) {
+  return <SeatsView zoneCount={zoneCount} />;
 }

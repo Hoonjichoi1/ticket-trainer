@@ -12,6 +12,7 @@ import { SeatStatus, type SeatSummary, type SeatClaimResponse } from "@/lib/type
 import { findExpiredHolds } from "@/lib/simulation";
 import { advanceTick } from "@/lib/tick";
 import { recordJudgmentEvent, getSessionEvents } from "@/lib/session-result";
+import { getZoneSeatRange, type SeatGridConfig, type SeatZone } from "@/lib/seat-zones";
 
 export const HOLD_DURATION_MS = 5 * 60_000;
 
@@ -198,12 +199,38 @@ export async function releaseHold(params: {
   return { released: true };
 }
 
-/** Full seat map for a run (~200 seats), mapped to the SeatMapResponse shape. */
-export async function listSeatMap(params: { runId: string }): Promise<SeatSummary[]> {
-  const seats = await prisma.seat.findMany({
-    where: { simulationRunId: params.runId },
-    orderBy: [{ row: "asc" }, { number: "asc" }],
-  });
+/**
+ * One zone's seat map for a run (D-15: GET /api/seats is zone-scoped —
+ * a full-run listing would be ~1MB/poll at MEGA's 15,000 seats), mapped to
+ * the SeatMapResponse shape. Filters by row AND number range
+ * (getZoneSeatRange, D-17's 2D row-band x left-right-split zones) rather
+ * than fetching every seat and filtering in application code, so DB/network
+ * cost scales with zone size, not total seat count.
+ *
+ * Ordered by row cast to an integer, then number — Seat.row is a numeric
+ * *string* label ("1".."150", D-15), so a plain string ORDER BY "row"
+ * sorts lexicographically ("10" < "2") and scrambles physical row
+ * adjacency for any tier with >9 rows. Casting keeps seats from the same
+ * physical row contiguous in the returned array, which
+ * app/seats/SeatsView.tsx's chunkIntoRows relies on for its grid layout.
+ */
+export async function listSeatMap(params: {
+  runId: string;
+  zone: SeatZone;
+  seatGrid: SeatGridConfig;
+}): Promise<SeatSummary[]> {
+  const { runId, zone, seatGrid } = params;
+  const { rowStart, rowEnd, numberStart, numberEnd } = getZoneSeatRange(zone, seatGrid);
+
+  const seats = await prisma.$queryRaw<
+    Array<{ id: string; row: string; number: number; status: SeatStatus }>
+  >`
+    SELECT id, row, number, status FROM "Seat"
+    WHERE "simulationRunId" = ${runId}
+      AND CAST(row AS INTEGER) BETWEEN ${rowStart} AND ${rowEnd}
+      AND number BETWEEN ${numberStart} AND ${numberEnd}
+    ORDER BY CAST(row AS INTEGER) ASC, number ASC
+  `;
   return seats.map((seat) => ({ id: seat.id, row: seat.row, number: seat.number, status: seat.status }));
 }
 

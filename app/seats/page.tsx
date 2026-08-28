@@ -39,5 +39,5 @@ export default async function SeatsPage({ searchParams }: SeatsPageProps) {
     redirect("/queue");
   }
 
-  return <SeatsViewLoader />;
+  return <SeatsViewLoader zoneCount={run.config.zoneCount} />;
 }

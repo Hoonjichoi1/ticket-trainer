@@ -68,7 +68,7 @@ async function createSeats(runId: string, concertId: string, count: number) {
   for (let i = 0; i < count; i++) {
     seats.push(
       await db.seat.create({
-        data: { concertId, simulationRunId: runId, row: "A", number: i + 1 },
+        data: { concertId, simulationRunId: runId, row: "1", number: i + 1 },
       }),
     );
   }
@@ -83,7 +83,7 @@ async function createHeldSeat(params: {
   expiresAt: Date;
 }) {
   const seat = await db.seat.create({
-    data: { concertId: params.concertId, simulationRunId: params.runId, row: "A", number: 1, status: SeatStatus.HELD },
+    data: { concertId: params.concertId, simulationRunId: params.runId, row: "1", number: 1, status: SeatStatus.HELD },
   });
   const hold = await db.hold.create({
     data: { seatId: seat.id, sessionId: params.sessionId, expiresAt: params.expiresAt },
@@ -269,16 +269,55 @@ describe("seatBelongsToRun", () => {
 });
 
 describe("listSeatMap", () => {
-  it("returns every seat in the run with its current status", async () => {
+  // SMALL's real grid (25 rows x 100/row, 8 zones -> 2 bands x 4 splits,
+  // see lib/seat-zones.ts's computeZoneGrid): zone "1" (band 0, split 0)
+  // covers rows 1-13, numbers 1-25.
+  const SMALL_GRID = { seatRows: 25, seatsPerRow: 100, zoneCount: 8 };
+  // MEGA's real grid (150 x 100, 25 zones -> 5 bands x 5 splits): zone "1"
+  // (band 0, split 0) covers rows 1-30, numbers 1-20.
+  const MEGA_GRID = { seatRows: 150, seatsPerRow: 100, zoneCount: 25 };
+
+  it("returns every seat within the requested zone's row/number ranges, with current status", async () => {
     const run = await createRun();
+    // createSeats gives all seats row "1", numbers 1..2 — both fall in
+    // zone "1" of SMALL_GRID (rows 1-13, numbers 1-25).
     const [seatA, seatB] = await createSeats(run.id, run.concertId, 2);
     await claimSeat({ seatId: seatB.id, sessionId: freshSessionId(), now: new Date() });
 
-    const map = await listSeatMap({ runId: run.id });
+    const map = await listSeatMap({ runId: run.id, zone: "1", seatGrid: SMALL_GRID });
 
     expect(map).toHaveLength(2);
     expect(map.find((s) => s.id === seatA.id)?.status).toBe(SeatStatus.AVAILABLE);
     expect(map.find((s) => s.id === seatB.id)?.status).toBe(SeatStatus.HELD);
+  });
+
+  it("excludes seats outside the requested zone's range on either axis (D-17 2D banding)", async () => {
+    const run = await createRun();
+    const concertId = run.concertId;
+    const inZone1 = await db.seat.create({ data: { concertId, simulationRunId: run.id, row: "10", number: 10 } }); // band 0, split 0
+    const differentSplit = await db.seat.create({ data: { concertId, simulationRunId: run.id, row: "10", number: 60 } }); // same band, different split
+    const differentBand = await db.seat.create({ data: { concertId, simulationRunId: run.id, row: "100", number: 10 } }); // different band, same split
+
+    const map = await listSeatMap({ runId: run.id, zone: "1", seatGrid: MEGA_GRID });
+
+    expect(map.map((s) => s.id)).toEqual([inZone1.id]);
+    expect(map.map((s) => s.id)).not.toContain(differentSplit.id);
+    expect(map.map((s) => s.id)).not.toContain(differentBand.id);
+  });
+
+  it("orders seats by row as a number (not lexicographically) so double-digit rows sort correctly", async () => {
+    const run = await createRun();
+    const concertId = run.concertId;
+    // Same zone (all number=1, zone "1" of SMALL_GRID covers rows 1-13),
+    // inserted out of numeric order — a plain string ORDER BY "row" would
+    // yield "10" < "11" < "9" (lexicographic), not 9 < 10 < 11.
+    const row11 = await db.seat.create({ data: { concertId, simulationRunId: run.id, row: "11", number: 1 } });
+    const row9 = await db.seat.create({ data: { concertId, simulationRunId: run.id, row: "9", number: 1 } });
+    const row10 = await db.seat.create({ data: { concertId, simulationRunId: run.id, row: "10", number: 1 } });
+
+    const map = await listSeatMap({ runId: run.id, zone: "1", seatGrid: SMALL_GRID });
+
+    expect(map.map((s) => s.id)).toEqual([row9.id, row10.id, row11.id]);
   });
 });
 

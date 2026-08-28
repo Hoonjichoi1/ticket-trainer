@@ -46,12 +46,12 @@ describe("SeatsView (ROADMAP D-6: click is local-only, confirm performs the real
 
   it("keeps a seat click purely local; a confirm conflict (bot already took the seat) clears the selection so the user can reselect and confirm a different seat", async () => {
     const user = userEvent.setup();
-    render(<SeatsView />);
+    render(<SeatsView zoneCount={8} />);
 
-    const zoneButton = await screen.findByRole("button", { name: /Block A/ });
+    const zoneButton = await screen.findByRole("button", { name: /Zone 1/ });
     await user.click(zoneButton);
 
-    const seat1Button = await screen.findByRole("button", { name: /Seat A1, available/i });
+    const seat1Button = await screen.findByRole("button", { name: /Seat row A, number 1, available/i });
     await user.click(seat1Button);
 
     // Clicking a seat must not have sent any claim request — it's local
@@ -85,12 +85,12 @@ describe("SeatsView (ROADMAP D-6: click is local-only, confirm performs the real
     // Selection is cleared and the map refetch is reflected: seat-1 is now
     // disabled (HELD), and confirm is disabled again with no selection.
     await waitFor(() =>
-      expect(screen.getByRole("button", { name: /Seat A1, held/i })).toBeDisabled(),
+      expect(screen.getByRole("button", { name: /Seat row A, number 1, held/i })).toBeDisabled(),
     );
     expect(confirmButton).toBeDisabled();
 
     // The core D-6 assertion: reselecting a different seat is NOT blocked.
-    const seat2Button = screen.getByRole("button", { name: /Seat A2, available/i });
+    const seat2Button = screen.getByRole("button", { name: /Seat row A, number 2, available/i });
     await user.click(seat2Button);
     expect(seat2Button).toHaveAttribute("aria-pressed", "true");
     expect(confirmButton).toBeEnabled();

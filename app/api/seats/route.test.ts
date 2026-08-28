@@ -1,4 +1,5 @@
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { NextRequest } from "next/server";
 import { Tier, SimulationRunStatus, QueueEntryStatus, SeatStatus } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
 
@@ -62,7 +63,8 @@ async function createActiveRun(sessionId: string, opts: { tier?: Tier; admitted?
       sessionId,
       tier: opts.tier ?? Tier.SMALL,
       status: SimulationRunStatus.ACTIVE,
-      lastTickAt: new Date("2026-01-01T00:00:00.000Z"),
+      // D-21: queueOpenAt (not lastTickAt) anchors computeBotClaimCount's elapsed.
+      queueOpenAt: new Date("2026-01-01T00:00:00.000Z"),
     },
   });
   createdRunIds.push(run.id);
@@ -85,7 +87,23 @@ async function createActiveRun(sessionId: string, opts: { tier?: Tier; admitted?
 async function createSeats(runId: string, concertId: string, count: number) {
   const seats = [];
   for (let i = 0; i < count; i++) {
-    seats.push(await db.seat.create({ data: { concertId, simulationRunId: runId, row: "A", number: i + 1 } }));
+    seats.push(await db.seat.create({ data: { concertId, simulationRunId: runId, row: "1", number: i + 1 } }));
+  }
+  return seats;
+}
+
+async function createSeatsAtNumbers(runId: string, concertId: string, numbers: number[]) {
+  const seats = [];
+  for (const number of numbers) {
+    seats.push(await db.seat.create({ data: { concertId, simulationRunId: runId, row: "1", number } }));
+  }
+  return seats;
+}
+
+async function createSeatsAt(runId: string, concertId: string, coords: Array<[row: string, number: number]>) {
+  const seats = [];
+  for (const [row, number] of coords) {
+    seats.push(await db.seat.create({ data: { concertId, simulationRunId: runId, row, number } }));
   }
   return seats;
 }
@@ -98,15 +116,20 @@ function jsonRequest(body: unknown): Request {
   });
 }
 
+function getRequest(zone?: string): NextRequest {
+  const url = zone !== undefined ? `http://localhost/api/seats?zone=${zone}` : "http://localhost/api/seats";
+  return new NextRequest(url);
+}
+
 describe("GET /api/seats", () => {
   it("rejects a request with no session cookie", async () => {
-    const res = await GET();
+    const res = await GET(getRequest("1"));
     expect(res.status).toBe(401);
   });
 
   it("returns 404 when the session has no active simulation run", async () => {
     await establishSession();
-    const res = await GET();
+    const res = await GET(getRequest("1"));
     expect(res.status).toBe(404);
     const json = await res.json();
     expect(json.code).toBe("NO_ACTIVE_RUN");
@@ -116,30 +139,76 @@ describe("GET /api/seats", () => {
     const sessionId = await establishSession();
     await createActiveRun(sessionId, { admitted: false });
 
-    const res = await GET();
+    const res = await GET(getRequest("1"));
     expect(res.status).toBe(403);
     const json = await res.json();
     expect(json.code).toBe("NOT_ADMITTED");
   });
 
-  it("returns the seat map after running the tick (bot claim + expired-hold release)", async () => {
+  it("returns 400 when the zone query param is missing", async () => {
     const sessionId = await establishSession();
-    const run = await createActiveRun(sessionId, { tier: Tier.MEGA }); // MEGA botIntensity 0.8, lastTickAt far in the past
-    const seats = await createSeats(run.id, run.concertId, 10);
+    await createActiveRun(sessionId, { tier: Tier.SMALL });
 
-    const res = await GET();
+    const res = await GET(getRequest());
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.code).toBe("INVALID_ZONE");
+  });
+
+  it("returns 400 for a zone value out of range for the tier's zoneCount", async () => {
+    const sessionId = await establishSession();
+    await createActiveRun(sessionId, { tier: Tier.SMALL }); // SMALL zoneCount is 8 (see prisma/seed.ts)
+
+    const res = await GET(getRequest("99"));
+    expect(res.status).toBe(400);
+    const json = await res.json();
+    expect(json.code).toBe("INVALID_ZONE");
+  });
+
+  it("returns only the requested zone's seats, not the whole run's seat map (D-17 2D banding)", async () => {
+    const sessionId = await establishSession();
+    // SMALL zoneCount 8 -> 2 bands x 4 splits (see lib/seat-zones.ts's
+    // computeZoneGrid): zone "1" (band 0, split 0) covers rows 1-13, numbers 1-25.
+    const run = await createActiveRun(sessionId, { tier: Tier.SMALL });
+    const inZone = await createSeatsAt(run.id, run.concertId, [
+      ["1", 1],
+      ["13", 25],
+      ["7", 13],
+    ]);
+    await createSeatsAt(run.id, run.concertId, [
+      ["1", 26], // same band, different split -> zone 2
+      ["14", 1], // different band, same split -> zone 5
+    ]);
+
+    const res = await GET(getRequest("1"));
     expect(res.status).toBe(200);
     const json = await res.json();
-    expect(json.seats).toHaveLength(10);
+    expect(json.seats.map((s: { id: string }) => s.id).sort()).toEqual(inZone.map((s) => s.id).sort());
+  });
 
-    // lastTickAt fixed at 2026-01-01T00:00:00Z and "now" is real wall-clock
-    // time, so a huge elapsed window has passed -> the bot claim is capped
-    // at all 10 available seats.
+  it("runs the tick (bot claim + expired-hold release) across the whole run, independent of the requested zone", async () => {
+    const sessionId = await establishSession();
+    // MEGA zoneCount 25 -> 5 bands x 5 splits: zone "1" (band 0, split 0)
+    // covers rows 1-30, numbers 1-20; zone "2" (band 0, split 1) covers
+    // rows 1-30, numbers 21-40 — same band, adjacent split.
+    const run = await createActiveRun(sessionId, { tier: Tier.MEGA }); // D-21 botCurveK, queueOpenAt far in the past
+    const zone1Seats = await createSeatsAtNumbers(run.id, run.concertId, [1, 2, 3, 4]);
+    const zone2Seats = await createSeatsAtNumbers(run.id, run.concertId, [21, 22, 23, 24]);
+
+    const res = await GET(getRequest("1"));
+    expect(res.status).toBe(200);
+    const json = await res.json();
+    expect(json.seats).toHaveLength(4);
+
+    // queueOpenAt fixed far in the past and "now" is real wall-clock time,
+    // so the depletion curve is fully saturated -> the bot claim covers
+    // every AVAILABLE seat in the run, not just the requested zone's.
     const heldCount = json.seats.filter((s: { status: string }) => s.status === "HELD").length;
-    expect(heldCount).toBe(10);
+    expect(heldCount).toBe(4);
 
-    const holds = await db.hold.findMany({ where: { seatId: { in: seats.map((s) => s.id) } } });
-    expect(holds).toHaveLength(10);
+    const allSeatIds = [...zone1Seats, ...zone2Seats].map((s) => s.id);
+    const holds = await db.hold.findMany({ where: { seatId: { in: allSeatIds } } });
+    expect(holds).toHaveLength(8);
   });
 });
 

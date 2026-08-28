@@ -149,7 +149,7 @@ export interface QueuePollResponse {
   admissionToken?: string;
 }
 
-// GET /api/seats (full ~200-seat map) + POST /api/seats (atomic claim)
+// GET /api/seats?zone=<id> (one zone's seat map, D-15) + POST /api/seats (atomic claim)
 export interface SeatSummary {
   id: string;
   row: string;
