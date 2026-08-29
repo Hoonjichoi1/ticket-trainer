@@ -58,7 +58,12 @@ function parseArgs(tierValues: string[]) {
   const botCurveKOverride = args.has("botCurveK") ? Number(args.get("botCurveK")) : undefined;
   // D-21: elapsed since queueOpenAt (sale considered open) — the checkpoints
   // the user's request specified, covering a fast arrival through a slow one.
-  const elapsedSecondsList = (args.get("elapsedSeconds") ?? "0,5,10,20,30,45,60,90,120")
+  // D-23: default range extended from D-21's 0-120s to 0-1800s (30min) —
+  // surgeBaseline (D-23) means a session now realistically reaches the seat
+  // screen at ~200s (SMALL) to ~1,333s (MEGA), not within the first two
+  // minutes, so the old 0-120s sweep no longer covers the elapsed values
+  // that actually matter. See ROADMAP D-23 for the measured table.
+  const elapsedSecondsList = (args.get("elapsedSeconds") ?? "0,60,200,300,500,700,1000,1200,1333,1500,1800")
     .split(",")
     .map((s) => Number(s.trim()));
   return { tier, trials, botCurveKOverride, elapsedSecondsList };

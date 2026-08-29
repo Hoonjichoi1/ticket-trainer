@@ -165,11 +165,21 @@ model SimulationConfig {
   tier                Tier   @unique
   arrivalRatePerSec   Float
   admissionRatePerSec Float
+  // D-23: fixed "open-instant" queue surge — added to arrivalRatePerSec's
+  // continuing inflow so joining at t=0 (the exact open moment) still
+  // yields a realistically large initial position instead of ~0. See
+  // lib/queue.ts's joinQueue for the formula; see ROADMAP D-23 for the
+  // real-ticketing research (thousands-to-tens-of-thousands at t=0) behind
+  // this addition and each tier's chosen value.
+  surgeBaseline       Float  @default(0)
   // D-21: exponential-approach depletion curve steepness (1/sec) —
   // claimCount = floor(poolSize * (1 - e^(-botCurveK * elapsedSinceOpen))).
   // Replaces the old linear botIntensity (seats/sec); renamed rather than
   // reinterpreted in place since the unit/scale is completely different
   // (botCurveK values are small, ~0.001-0.05, not seats/sec).
+  // D-23: re-derived against the new (much longer, minutes not seconds)
+  // elapsedSinceOpen scale a user actually reaches the seat screen at —
+  // see ROADMAP D-23.
   botCurveK           Float
   errorRate           Float
   latencyMs           Int

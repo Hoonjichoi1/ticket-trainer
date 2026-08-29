@@ -73,7 +73,7 @@ describe("advanceTick (D-21: elapsed anchored on queueOpenAt, not lastTickAt; D-
     const result = await withTx((tx) =>
       advanceTick({
         runId: run.id,
-        now: new Date(t0.getTime() + 3_600_000), // +1h -> curve target is essentially the whole pool
+        now: new Date(t0.getTime() + SATURATING_ELAPSED_MS), // curve target is essentially the whole pool
         tx,
       }),
     );

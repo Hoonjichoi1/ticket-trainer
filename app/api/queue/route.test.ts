@@ -50,11 +50,10 @@ async function establishSession(): Promise<string> {
 }
 
 // Default openAt is ~100s before "now" (computed at call time, not a fixed
-// date) so the D-4 arrival-rate-derived initial position lands close to the
-// same round number (SMALL: 5/sec * 100s = 500) the old fixed
-// virtualQueueSize=500 gave — the route computes its own `now` a few ms
-// later than this default is evaluated, so assertions below tolerate that
-// small drift instead of asserting an exact value.
+// date). D-23: SMALL's surgeBaseline (400) + arrivalRatePerSec (2/sec) * 100s
+// = ~600 — the route computes its own `now` a few ms later than this default
+// is evaluated, so assertions below tolerate that small drift instead of
+// asserting an exact value.
 async function createActiveRun(sessionId: string, openAt = new Date(Date.now() - 100_000)) {
   const concert = await db.concert.create({
     data: { title: "queue-route-test", venue: "test-venue", openAt },
@@ -89,18 +88,18 @@ describe("POST /api/queue", () => {
     expect(json.code).toBe("NO_ACTIVE_RUN");
   });
 
-  it("joins the queue with a position derived from arrivalRatePerSec × elapsed time since open", async () => {
+  it("joins the queue with a position derived from surgeBaseline + arrivalRatePerSec × elapsed time since open", async () => {
     const sessionId = await establishSession();
     await createActiveRun(sessionId);
 
     const res = await POST();
     expect(res.status).toBe(200);
     const json = await res.json();
-    // ~100s since open * SMALL arrivalRatePerSec (5/sec) = ~500; tolerate a
-    // few ms of real-clock drift between the fixture's openAt and the
-    // route's own `new Date()`.
-    expect(json.position).toBeGreaterThanOrEqual(500);
-    expect(json.position).toBeLessThanOrEqual(501);
+    // SMALL surgeBaseline (400) + arrivalRatePerSec (2/sec) * ~100s since
+    // open = ~600; tolerate a few ms of real-clock drift between the
+    // fixture's openAt and the route's own `new Date()`.
+    expect(json.position).toBeGreaterThanOrEqual(600);
+    expect(json.position).toBeLessThanOrEqual(601);
     expect(json.status).toBe("WAITING");
   });
 
@@ -157,12 +156,13 @@ describe("GET /api/queue", () => {
     const res = await GET();
     expect(res.status).toBe(200);
     const json = await res.json();
-    // Starting position is ~500 (D-4: arrivalRatePerSec 5/sec * ~100s since
-    // open). A few ms of real elapsed time pass between the POST and GET
-    // calls above, decaying it slightly further (admissionRatePerSec 5/sec)
-    // — tolerate both that decay and the join-time rounding drift.
-    expect(json.position).toBeLessThanOrEqual(501);
-    expect(json.position).toBeGreaterThan(498);
+    // Starting position is ~600 (D-23: surgeBaseline 400 + arrivalRatePerSec
+    // 2/sec * ~100s since open). A few ms of real elapsed time pass between
+    // the POST and GET calls above, decaying it slightly further
+    // (admissionRatePerSec 2/sec) — tolerate both that decay and the
+    // join-time rounding drift.
+    expect(json.position).toBeLessThanOrEqual(601);
+    expect(json.position).toBeGreaterThan(598);
     expect(json.status).toBe("WAITING");
   });
 });

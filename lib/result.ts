@@ -47,10 +47,20 @@ export function determineOutcome(params: { hasBooking: boolean; events: Judgment
 // thresholds — still accurate when it fires, just a low-frequency feedback
 // path under the new model. Left as-is; see ROADMAP D-22 for the measured
 // distribution.
+// D-23: targetTotalMs re-derived to absorb the new (much longer) queue wait
+// each tier's surgeBaseline/admissionRatePerSec now implies — the "queue"
+// stageTiming (lib/queue.ts's joinQueue -> redeemAdmissionToken span) is
+// included in totalDurationMs below, and previously assumed a near-zero
+// queue wait for a well-timed click. new targetTotalMs = old targetTotalMs
+// (unchanged: the non-queue stages' budget) + this tier's new queue wait
+// (surgeBaseline / admissionRatePerSec, see prisma/seed.ts and ROADMAP
+// D-23) — SMALL 90s+200s=290s, MEDIUM 150s+500s=650s, MEGA
+// 240s+~1,333s=~1,573s. maxContentionLosses is untouched (D-21/D-22's
+// finding stands — see ROADMAP D-23 for why this wasn't revisited here).
 export const TIER_BENCHMARKS: Record<Tier, { targetTotalMs: number; maxContentionLosses: number }> = {
-  [Tier.SMALL]: { targetTotalMs: 90_000, maxContentionLosses: 1 },
-  [Tier.MEDIUM]: { targetTotalMs: 150_000, maxContentionLosses: 3 },
-  [Tier.MEGA]: { targetTotalMs: 240_000, maxContentionLosses: 6 },
+  [Tier.SMALL]: { targetTotalMs: 290_000, maxContentionLosses: 1 },
+  [Tier.MEDIUM]: { targetTotalMs: 650_000, maxContentionLosses: 3 },
+  [Tier.MEGA]: { targetTotalMs: 1_573_000, maxContentionLosses: 6 },
 };
 
 function totalDurationMs(stageTimings: StageTimings): number {
