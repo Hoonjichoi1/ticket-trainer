@@ -50,10 +50,11 @@ async function establishSession(): Promise<string> {
 }
 
 // Default openAt is ~100s before "now" (computed at call time, not a fixed
-// date). D-23: SMALL's surgeBaseline (400) + arrivalRatePerSec (2/sec) * 100s
-// = ~600 — the route computes its own `now` a few ms later than this default
-// is evaluated, so assertions below tolerate that small drift instead of
-// asserting an exact value.
+// date) — well past the 1s surge window (D-23 2nd revision), so this
+// exercises the post-window formula: SMALL's surgeBaseline (4,167) +
+// arrivalRatePerSec (20.84/sec) * ~99s = ~6,230 — the route computes its
+// own `now` a few ms later than this default is evaluated, so assertions
+// below tolerate that small drift instead of asserting an exact value.
 async function createActiveRun(sessionId: string, openAt = new Date(Date.now() - 100_000)) {
   const concert = await db.concert.create({
     data: { title: "queue-route-test", venue: "test-venue", openAt },
@@ -95,11 +96,12 @@ describe("POST /api/queue", () => {
     const res = await POST();
     expect(res.status).toBe(200);
     const json = await res.json();
-    // SMALL surgeBaseline (400) + arrivalRatePerSec (2/sec) * ~100s since
-    // open = ~600; tolerate a few ms of real-clock drift between the
-    // fixture's openAt and the route's own `new Date()`.
-    expect(json.position).toBeGreaterThanOrEqual(600);
-    expect(json.position).toBeLessThanOrEqual(601);
+    // ~6,230 (see createActiveRun's comment); tolerate a few ms of
+    // real-clock drift between the fixture's openAt and the route's own
+    // `new Date()` — at this tier's 20.84/sec rate, drift matters more
+    // than it did pre-2nd-revision, so the tolerance window is wider.
+    expect(json.position).toBeGreaterThanOrEqual(6229);
+    expect(json.position).toBeLessThanOrEqual(6234);
     expect(json.status).toBe("WAITING");
   });
 
@@ -156,13 +158,13 @@ describe("GET /api/queue", () => {
     const res = await GET();
     expect(res.status).toBe(200);
     const json = await res.json();
-    // Starting position is ~600 (D-23: surgeBaseline 400 + arrivalRatePerSec
-    // 2/sec * ~100s since open). A few ms of real elapsed time pass between
-    // the POST and GET calls above, decaying it slightly further
-    // (admissionRatePerSec 2/sec) — tolerate both that decay and the
-    // join-time rounding drift.
-    expect(json.position).toBeLessThanOrEqual(601);
-    expect(json.position).toBeGreaterThan(598);
+    // Starting position is ~6,230 (D-23 2nd revision: surgeBaseline 4,167 +
+    // arrivalRatePerSec 20.84/sec * ~99s since open, past the 1s surge
+    // window). A few ms of real elapsed time pass between the POST and GET
+    // calls above, decaying it slightly further (admissionRatePerSec
+    // 20.84/sec) — tolerate both that decay and the join-time rounding drift.
+    expect(json.position).toBeLessThanOrEqual(6234);
+    expect(json.position).toBeGreaterThan(6220);
     expect(json.status).toBe("WAITING");
   });
 });

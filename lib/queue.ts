@@ -7,7 +7,7 @@ import { randomUUID } from "node:crypto";
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import { QueueEntryStatus, SimulationRunStatus, type QueueStatus } from "@/lib/types";
-import { computeElapsedTime, computeQueuePosition } from "@/lib/simulation";
+import { computeElapsedTime, computeInitialQueuePosition, computeQueuePosition } from "@/lib/simulation";
 import { recordStageEntered, recordStageExited, recordJudgmentEvent } from "@/lib/session-result";
 
 export interface QueueSnapshot {
@@ -106,19 +106,21 @@ export async function joinQueue(params: {
     // D-4: initial position is proportional to how many virtual users have
     // arrived since the concert opened, not a fixed per-tier constant — so
     // joining closer to the exact open moment gets a lower (better) starting
-    // position. QueueEntry.position is Int, so round the continuous
-    // arrivalRatePerSec * elapsedSeconds value.
-    // D-23: D-4's original formula assumed the queue is *empty* at the
-    // exact open instant (position ~0 for a perfectly-timed click), which
-    // real ticketing research contradicts — real queues already carry a
-    // large simultaneous-click surge at t=0 (tens of thousands for a
-    // popular concert). surgeBaseline adds that fixed t=0 floor; the
-    // arrivalRatePerSec term still adds on top of it for sessions joining
-    // after the exact open moment. See ROADMAP D-23.
+    // position.
+    // D-23 (2nd revision): within the first SURGE_WINDOW_SECONDS after open,
+    // position ramps from 0 up to surgeBaseline — real ticketing research
+    // shows a large simultaneous-click surge already present within that
+    // first second, but the 1st revision's flat "surgeBaseline + ..." floor
+    // made any click inside that window land at nearly the same position,
+    // losing the "how fast did you click" training signal. After the
+    // window, arrivalRatePerSec keeps adding on top, same as before. See
+    // ROADMAP D-23 and lib/simulation.ts's computeInitialQueuePosition.
     const elapsedSinceOpen = computeElapsedTime({ since: run.queueOpenAt, now });
-    const initialPosition = Math.round(
-      config.surgeBaseline + config.arrivalRatePerSec * elapsedSinceOpen.seconds,
-    );
+    const initialPosition = computeInitialQueuePosition({
+      elapsedSinceOpen,
+      surgeBaseline: config.surgeBaseline,
+      arrivalRatePerSec: config.arrivalRatePerSec,
+    }).position;
 
     return tx.queueEntry.create({
       data: {

@@ -2,8 +2,10 @@ import { describe, it, expect } from "vitest";
 import {
   computeElapsedTime,
   computeBotClaimCount,
+  computeInitialQueuePosition,
   computeQueuePosition,
   findExpiredHolds,
+  SURGE_WINDOW_SECONDS,
 } from "@/lib/simulation";
 
 describe("computeElapsedTime", () => {
@@ -136,6 +138,86 @@ describe("computeBotClaimCount (D-21: front-loaded exponential-approach curve)",
     const target = Math.floor(5000 * (1 - Math.exp(-0.03 * 20)));
     expect(fromFewerTicks.claimCount).toBe(target);
     expect(100 + fromMoreTicks.claimCount).toBe(target);
+  });
+});
+
+describe("computeInitialQueuePosition (D-23 2nd revision: surge window)", () => {
+  it("is 0 at exactly elapsed=0", () => {
+    const result = computeInitialQueuePosition({
+      elapsedSinceOpen: { ms: 0, seconds: 0 },
+      surgeBaseline: 25_000,
+      arrivalRatePerSec: 18.75,
+    });
+    expect(result.position).toBe(0);
+  });
+
+  it("ramps linearly within the surge window: position is proportional to elapsed/SURGE_WINDOW_SECONDS", () => {
+    const at = (seconds: number) =>
+      computeInitialQueuePosition({
+        elapsedSinceOpen: { ms: seconds * 1000, seconds },
+        surgeBaseline: 25_000,
+        arrivalRatePerSec: 18.75,
+      }).position;
+
+    expect(at(0.1)).toBe(2500); // 10% of surgeBaseline
+    expect(at(0.5)).toBe(12500); // 50%
+    expect(at(0.9)).toBe(22500); // 90%
+  });
+
+  it("a later click within the surge window always yields a strictly worse (larger) position — reaction time matters", () => {
+    const fast = computeInitialQueuePosition({
+      elapsedSinceOpen: { ms: 100, seconds: 0.1 },
+      surgeBaseline: 25_000,
+      arrivalRatePerSec: 18.75,
+    });
+    const slow = computeInitialQueuePosition({
+      elapsedSinceOpen: { ms: 900, seconds: 0.9 },
+      surgeBaseline: 25_000,
+      arrivalRatePerSec: 18.75,
+    });
+    expect(slow.position).toBeGreaterThan(fast.position);
+    // The whole point of the 2nd revision: the difference must be large
+    // (thousands), not a rounding-only difference the 1st revision's flat
+    // floor would have produced.
+    expect(slow.position - fast.position).toBeGreaterThan(1000);
+  });
+
+  it("equals surgeBaseline exactly at elapsed == SURGE_WINDOW_SECONDS (continuous boundary)", () => {
+    const result = computeInitialQueuePosition({
+      elapsedSinceOpen: { ms: SURGE_WINDOW_SECONDS * 1000, seconds: SURGE_WINDOW_SECONDS },
+      surgeBaseline: 25_000,
+      arrivalRatePerSec: 18.75,
+    });
+    expect(result.position).toBe(25_000);
+  });
+
+  it("after the surge window, grows gently at arrivalRatePerSec counted from the window's close", () => {
+    const at3s = computeInitialQueuePosition({
+      elapsedSinceOpen: { ms: 3000, seconds: 3 },
+      surgeBaseline: 25_000,
+      arrivalRatePerSec: 18.75,
+    });
+    const at5s = computeInitialQueuePosition({
+      elapsedSinceOpen: { ms: 5000, seconds: 5 },
+      surgeBaseline: 25_000,
+      arrivalRatePerSec: 18.75,
+    });
+    // 25000 + 18.75 * (3 - 1) = 25037.5 -> 25038
+    expect(at3s.position).toBe(25_038);
+    // 25000 + 18.75 * (5 - 1) = 25075
+    expect(at5s.position).toBe(25_075);
+    expect(at5s.position).toBeGreaterThan(at3s.position);
+    // Post-window growth is far gentler than the surge window's ramp.
+    expect(at5s.position - at3s.position).toBeLessThan(100);
+  });
+
+  it("is deterministic: same input always yields same output", () => {
+    const input = {
+      elapsedSinceOpen: { ms: 400, seconds: 0.4 },
+      surgeBaseline: 4_167,
+      arrivalRatePerSec: 20.84,
+    };
+    expect(computeInitialQueuePosition(input)).toEqual(computeInitialQueuePosition(input));
   });
 });
 

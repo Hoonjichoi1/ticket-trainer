@@ -54,25 +54,28 @@ async function main() {
   // revisit during simulation-engine tuning (Task 007+). arrivalRatePerSec
   // mirrors admissionRatePerSec per tier (ROADMAP D-4) purely for clean,
   // predictable numbers during manual testing — not a real tuning claim.
-  // D-23: surgeBaseline/admissionRatePerSec/arrivalRatePerSec/botCurveK all
-  // jointly re-derived from real-ticketing research (a same-instant click
-  // still lands in a tens-of-thousands queue for a popular concert, and
-  // reaching the seat screen realistically takes minutes, not seconds) —
-  // see ROADMAP D-23 for the full derivation and measured table.
+  // D-23 (2nd revision): surgeBaseline is now the position reached at
+  // exactly SURGE_WINDOW_SECONDS (1s) after open, not a flat floor — see
+  // lib/simulation.ts's computeInitialQueuePosition and ROADMAP D-23 for
+  // the full derivation (seatCount * ~5/3 research-based multiplier) and
+  // measured table. admissionRatePerSec/botCurveK/targetTotalMs re-derived
+  // alongside it to keep each tier's total queue-wait target unchanged.
   const simulationConfigs = [
       {
         tier: Tier.SMALL,
-        // D-23: click-at-open initial position ~= surgeBaseline (400).
-        // wait to admission = surgeBaseline / admissionRatePerSec = 400/2 =
-        // 200s (~3m20s) — "within a few minutes" per ROADMAP D-23's SMALL
-        // target.
-        surgeBaseline: 400,
-        arrivalRatePerSec: 2,
-        admissionRatePerSec: 2,
-        // D-23: re-derived against the new elapsedSinceOpen scale (a SMALL
-        // session now reaches the seat screen at ~200s, not ~60-120s) —
-        // targets ~25% pool depleted at t=200s. See ROADMAP D-23 for the
-        // measured table.
+        // D-23 (2nd rev): surgeBaseline = 2,500 seats * ~5/3 = 4,167 (same
+        // research-based multiplier as MEDIUM/MEGA, see ROADMAP D-23 — no
+        // SMALL-tier real-world queue data was found, so consistency with
+        // the other tiers' multiplier was chosen over an unfounded
+        // SMALL-specific guess). wait to admission = surgeBaseline /
+        // admissionRatePerSec = 4,167/20.84 = ~200s (~3m20s), unchanged
+        // from the 1st revision's SMALL target.
+        surgeBaseline: 4_167,
+        arrivalRatePerSec: 20.84,
+        admissionRatePerSec: 20.84,
+        // D-23: targets ~25% pool depleted at t=200s (this tier's arrival
+        // elapsed, unchanged by the 2nd revision since the wait target
+        // didn't move). See ROADMAP D-23 for the measured table.
         botCurveK: 0.00144,
         errorRate: 0.02,
         latencyMs: 50,
@@ -83,13 +86,14 @@ async function main() {
       },
       {
         tier: Tier.MEDIUM,
-        // D-23: wait to admission = 4,000/8 = 500s (~8m20s) — between SMALL
-        // and MEGA per ROADMAP D-23's target.
-        surgeBaseline: 4_000,
-        arrivalRatePerSec: 8,
-        admissionRatePerSec: 8,
-        // D-23: targets ~60% pool depleted at t=500s (this tier's new
-        // arrival elapsed). See ROADMAP D-23 for the measured table.
+        // D-23 (2nd rev): surgeBaseline = 7,000 seats * ~5/3 = 11,667.
+        // wait to admission = 11,667/23.33 = ~500s (~8m20s), unchanged from
+        // the 1st revision's MEDIUM target — between SMALL and MEGA.
+        surgeBaseline: 11_667,
+        arrivalRatePerSec: 23.33,
+        admissionRatePerSec: 23.33,
+        // D-23: targets ~60% pool depleted at t=500s (unchanged). See
+        // ROADMAP D-23 for the measured table.
         botCurveK: 0.00183,
         errorRate: 0.05,
         latencyMs: 150,
@@ -100,26 +104,29 @@ async function main() {
       },
       {
         tier: Tier.MEGA,
-        // D-23: real-ticketing research (GD 2025 concert: click at open ->
-        // ~25,000th in queue; NCT DREAM presale: 1.5M concurrent) puts a
-        // MEGA-tier click-at-open position in the tens of thousands —
-        // surgeBaseline=40,000 lands inside that range. wait to admission =
-        // 40,000/30 = ~1,333s (~22m13s), inside the researched ~20-25min
-        // window and safely under the 30min ceiling. See ROADMAP D-23.
-        surgeBaseline: 40_000,
-        arrivalRatePerSec: 30,
-        admissionRatePerSec: 30,
+        // D-23 (2nd rev): the 1st revision's flat surgeBaseline=40,000 was
+        // an ungrounded estimate — re-verified against real-ticketing
+        // research (GD 2025 concert, a venue/pool size close to MEGA's
+        // 15,000 seats: a user who clicked at open but self-reported as
+        // "on the slower side" landed at position ~25,000, i.e. ~1.67x
+        // seat count) and revised down: surgeBaseline = 15,000 * 5/3 =
+        // 25,000, landing exactly on that research anchor. wait to
+        // admission = 25,000/18.75 = ~1,333s (~22m13s) — deliberately kept
+        // unchanged from the 1st revision's target (inside the researched
+        // ~20-25min window, safely under the 30min ceiling) by solving
+        // admissionRatePerSec for the same wait given the new,
+        // research-grounded surgeBaseline. See ROADMAP D-23.
+        surgeBaseline: 25_000,
+        arrivalRatePerSec: 18.75,
+        admissionRatePerSec: 18.75,
         // D-15 target seat scale: 150 rows x 100 seats/row = 15,000 seats, 25 zones.
         seatRows: 150,
         seatsPerRow: 100,
         zoneCount: 25,
         // D-21 introduced this front-loaded exponential-approach curve;
-        // D-23 replaces D-21/D-18's values (tuned for elapsed 0-120s) —
-        // the arrival elapsed a MEGA session actually reaches the seat
-        // screen at is now ~1,333s, not ~60-120s. Targets ~95% pool
-        // depleted at t=1,333s (individual zones landing at/near literal
-        // sellout, matching D-21's original "hop to another zone" intent).
-        // See ROADMAP D-23 for the measured table across the new scale.
+        // D-23 targets ~95% pool depleted at t=1,333s (this tier's arrival
+        // elapsed, unchanged by the 2nd revision since the wait target
+        // didn't move — see ROADMAP D-23 for the measured table).
         botCurveK: 0.00225,
         errorRate: 0.1,
         latencyMs: 400,

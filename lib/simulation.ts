@@ -142,6 +142,64 @@ export function computeBotClaimCount(input: BotClaimInput): BotClaimResult {
 }
 
 // ---------------------------------------------------------------------
+// Initial queue position (F002/F003, D-23 2nd revision) — surge window
+// ---------------------------------------------------------------------
+
+/**
+ * Length, in seconds, of the "opening-instant surge" window that
+ * computeInitialQueuePosition ramps SimulationConfig.surgeBaseline over.
+ * Fixed at 1s, identical across tiers (not a per-tier config field) — the
+ * D-23 2nd-revision request judged a real "Book Now" click's reaction time
+ * to realistically be well under 1s, and a longer window (3s was
+ * considered and rejected) would spread that reaction time over too wide a
+ * range to make sub-second timing differences visible in the resulting
+ * position. See ROADMAP D-23.
+ */
+export const SURGE_WINDOW_SECONDS = 1;
+
+export interface InitialQueuePositionInput {
+  /** computeElapsedTime({ since: SimulationRun.queueOpenAt, now: joinedAt }) */
+  elapsedSinceOpen: ElapsedTime;
+  /** SimulationConfig.surgeBaseline for this run's tier — the position reached at exactly elapsedSinceOpen == SURGE_WINDOW_SECONDS */
+  surgeBaseline: number;
+  /** SimulationConfig.arrivalRatePerSec for this run's tier — gentle per-second growth applied only once the surge window has closed */
+  arrivalRatePerSec: number;
+}
+
+export interface InitialQueuePositionResult {
+  /** rounded to the nearest integer — QueueEntry.position is Int */
+  position: number;
+}
+
+/**
+ * D-23 2nd revision: replaces the 1st revision's flat `surgeBaseline +
+ * arrivalRatePerSec * elapsed` formula, which made surgeBaseline a constant
+ * floor for any elapsed near 0 — a click at 0.1s and a click at 0.9s after
+ * open landed at (almost) the same position, defeating F002/F003's actual
+ * training goal of rewarding a fast click.
+ *
+ * Within the surge window (elapsedSinceOpen <= SURGE_WINDOW_SECONDS),
+ * position ramps LINEARLY from 0 at elapsed=0 to surgeBaseline at
+ * elapsed=SURGE_WINDOW_SECONDS, so reaction time inside that window
+ * directly and proportionally determines position — clicking at 0.1s lands
+ * at ~10% of surgeBaseline, 0.9s at ~90%. After the window, position keeps
+ * climbing at the tier's normal (much gentler) arrivalRatePerSec, counting
+ * from the window's close — continuous at the boundary, since both pieces
+ * equal surgeBaseline at elapsed=SURGE_WINDOW_SECONDS.
+ */
+export function computeInitialQueuePosition(
+  input: InitialQueuePositionInput,
+): InitialQueuePositionResult {
+  const { elapsedSinceOpen, surgeBaseline, arrivalRatePerSec } = input;
+  const t = elapsedSinceOpen.seconds;
+  const position =
+    t <= SURGE_WINDOW_SECONDS
+      ? surgeBaseline * (t / SURGE_WINDOW_SECONDS)
+      : surgeBaseline + arrivalRatePerSec * (t - SURGE_WINDOW_SECONDS);
+  return { position: Math.round(position) };
+}
+
+// ---------------------------------------------------------------------
 // Queue position decrement (F003 prep) — TODO: implement
 // ---------------------------------------------------------------------
 export interface QueuePositionInput {

@@ -199,10 +199,10 @@
   - **정리 안 한 것**: `scripts/_concurrency-probe-tmp.ts`, `scripts/_contention-losses-probe-tmp.ts` — 검증용 임시 스크립트, 이전 `_perf-probe-tmp.ts`와 동일하게 사용자가 직접 정리 예정
   - **영향 범위**: `lib/tick.ts`(`advanceTick` 시그니처를 `availableSeatCount` 파라미터 → `tx: Prisma.TransactionClient`로 변경, 내부에서 락 다음 줄에 직접 count), `lib/seats.ts`(`claimSeatsBatch`에 선택적 `tx` 추가, `runSeatMapTick`이 둘을 하나의 트랜잭션으로 합침) — `claimSeat`(사용자 클릭 경로, F006)·`GET/POST /api/seats` API shape 변경 없음. `lib/tick.test.ts`/`lib/seats.test.ts`/`app/api/dev/timewarp/route.test.ts` 갱신
   - See: 사용자 요청 (오늘 날짜)
-- [x] **D-23. 대기열 초기 순번 모델에 "오픈 정각 동시 접속 서지" 반영 — D-4의 "오픈 순간엔 대기열이 비어있다"는 전제를 뒤집는 결정** (사용자 요청, 실제 사례 리서치 포함: 지디 콘서트(2025) 실제 후기 — 정각 클릭 → 접속 튕김 → 재접속 → 순번 25,000번대(본인이 "느린 편"이라 인정) → 좌석 화면 도달까지 오픈 후 약 25분 → 도착 시점에 VIP/2층 이미 매진, 3층도 매진; NCT DREAM 콘서트 선예매(나무위키) — 150만 명 동시 접속으로 YES24 지연 사과문): D-4의 초기 순번 공식(`arrivalRatePerSec × (joinedAt - openAt)`)은 정확히 `openAt`에 클릭해도 순번이 0에 가깝게 나오는데, 실제 티케팅은 정반대로 정각 클릭도 만~수십만 단위 순번이 정상이고 좌석 화면 도달까지 체감 대기가 수십 초가 아니라 수십 분(약 20~25분) 단위 → **결정: 초기 순번 공식에 `surgeBaseline(tier)` 고정항을 추가 — `초기 순번 = surgeBaseline + arrivalRatePerSec × max(0, joinedAt - queueOpenAt)`. `admissionRatePerSec`도 `surgeBaseline`과 함께 재계산해 "정각 클릭 → 좌석 화면 도달"까지 MEGA 기준 약 20~25분(30분 이내)이 되도록 함**
-  - **왜 둘을 함께 계산해야 하는지**: `surgeBaseline`만 올리고 `admissionRatePerSec`을 그대로 두면 대기 시간이 30분을 훌쩍 넘거나(비현실적으로 길어짐), 반대로 순번은 큰데 즉시 소진되는 상황이 됨 — 대기 시간 = `surgeBaseline / admissionRatePerSec`이므로 목표 대기 시간을 먼저 정하고 두 값을 역산
+- [x] **D-23. 대기열 초기 순번 모델에 "오픈 정각 동시 접속 서지" 반영 — D-4의 "오픈 순간엔 대기열이 비어있다"는 전제를 뒤집는 결정** (사용자 요청, 실제 사례 리서치 포함: 지디 콘서트(2025) 실제 후기 — 정각 클릭 → 접속 튕김 → 재접속 → 순번 25,000번대(본인이 "느린 편"이라 인정) → 좌석 화면 도달까지 오픈 후 약 25분 → 도착 시점에 VIP/2층 이미 매진, 3층도 매진; NCT DREAM 콘서트 선예매(나무위키) — 150만 명 동시 접속으로 YES24 지연 사과문): D-4의 초기 순번 공식(`arrivalRatePerSec × (joinedAt - openAt)`)은 정확히 `openAt`에 클릭해도 순번이 0에 가깝게 나오는데, 실제 티케팅은 정반대로 정각 클릭도 만~수십만 단위 순번이 정상이고 좌석 화면 도달까지 체감 대기가 수십 초가 아니라 수십 분(약 20~25분) 단위 → ~~**결정: 초기 순번 공식에 `surgeBaseline(tier)` 고정항을 추가 — `초기 순번 = surgeBaseline + arrivalRatePerSec × max(0, joinedAt - queueOpenAt)`. `admissionRatePerSec`도 `surgeBaseline`과 함께 재계산해 "정각 클릭 → 좌석 화면 도달"까지 MEGA 기준 약 20~25분(30분 이내)이 되도록 함**~~ → **2차 개정(같은 날짜, 아래 "D-23 2차 개정" 참고)에서 이 고정항(flat floor) 방식 자체가 폐기됨 — 서지 구간(surge window) 방식으로 재설계**
+  - ~~**왜 둘을 함께 계산해야 하는지**: `surgeBaseline`만 올리고 `admissionRatePerSec`을 그대로 두면 대기 시간이 30분을 훌쩍 넘거나(비현실적으로 길어짐), 반대로 순번은 큰데 즉시 소진되는 상황이 됨 — 대기 시간 = `surgeBaseline / admissionRatePerSec`이므로 목표 대기 시간을 먼저 정하고 두 값을 역산~~ (이 계산 원칙 자체는 2차 개정에서도 그대로 유지됨 — 아래 참고)
   - **스키마 변경**: `SimulationConfig.surgeBaseline Float @default(0)` 추가(`prisma/migrations/20260829023151_simulation_config_surge_baseline`). `lib/simulation.ts`의 `computeQueuePosition`은 이미 `initialPosition`을 불투명한 값으로만 다뤄 변경 불필요(D-4 구현 시 정정과 동일한 이유) — `lib/queue.ts`의 `joinQueue` 한 곳만 수정
-  - **티어별 결정값** (SMALL/MEDIUM은 F001 난이도 원칙에 따라 MEGA보다 훨씬 작은 규모로, 대기 시간도 티어 규모에 맞게 짧게 — SMALL은 몇 분 이내, MEDIUM은 그 사이):
+  - ~~**티어별 결정값** (SMALL/MEDIUM은 F001 난이도 원칙에 따라 MEGA보다 훨씬 작은 규모로, 대기 시간도 티어 규모에 맞게 짧게 — SMALL은 몇 분 이내, MEDIUM은 그 사이):
 
     | Tier | surgeBaseline | admissionRatePerSec | arrivalRatePerSec | 대기 시간 (surgeBaseline/admissionRatePerSec) |
     |---|---|---|---|---|
@@ -210,7 +210,7 @@
     | MEDIUM | 4,000 | 8 | 8 | 500s (~8m20s) |
     | MEGA | 40,000 | 30 | 30 | ~1,333s (~22m13s) |
 
-    MEGA의 `surgeBaseline=40,000`은 리서치 근거(지디 콘서트 순번 25,000번대, "느린 편"이라는 본인 인정을 감안해 2만~5만대 규모로 목표 설정)의 중간값. 대기 시간 22.2분은 목표 범위(20~25분) 안쪽, 30분 한도에서 충분히 여유. `arrivalRatePerSec`은 `admissionRatePerSec`과 동일값으로 유지(D-4가 이미 채택한 "깔끔한 숫자를 위한 미러링" 원칙 — 실측 근거 아님 — 그대로 계승)
+    MEGA의 `surgeBaseline=40,000`은 리서치 근거(지디 콘서트 순번 25,000번대, "느린 편"이라는 본인 인정을 감안해 2만~5만대 규모로 목표 설정)의 중간값. 대기 시간 22.2분은 목표 범위(20~25분) 안쪽, 30분 한도에서 충분히 여유. `arrivalRatePerSec`은 `admissionRatePerSec`과 동일값으로 유지(D-4가 이미 채택한 "깔끔한 숫자를 위한 미러링" 원칙 — 실측 근거 아님 — 그대로 계승)~~ → **2차 개정에서 `40,000`이 실측 근거 없이 부풀려진 값이었음이 확인돼 폐기·재산정됨 (아래 "D-23 2차 개정" 참고). 대기 시간 목표(200s/500s/~1,333s) 자체는 2차 개정에서도 그대로 유지됨**
   - **botCurveK 재역산 (D-21 값은 이번 변경으로 사실상 무효화됨)**: D-21의 `botCurveK`는 elapsed 0~120초 구간에서 튜닝됐는데, `surgeBaseline` 도입으로 사용자가 실제 좌석 화면에 도달하는 elapsed가 이제 훨씬 뒤(SMALL 200s, MEDIUM 500s, MEGA ~1,333s)로 밀림 — D-21이 원래 의도했던 "도착 시점의 적정 소진율"(인기 zone 매진에 가까움, 전체 70~90%대)이 새 elapsed 지점에서 나오도록 `k = -ln(1 - target) / t`로 역산. 목표: SMALL 25%@200s, MEDIUM 60%@500s, MEGA 95%@1,333s(인기 zone 완전 매진에 가까운 체감 유지 — D-21보다 살짝 상향, MEGA는 "완전 매진" 표현에 부합하도록)
   - **실측 (`scripts/tune-bot-intensity.ts`, 새 elapsed 스케일로 재작성 — 기존 0~120s 기본 스윕을 0~1,800s로 확장, 여전히 결정론적이라 stddev 0.000)**:
 
@@ -224,11 +224,46 @@
     | 1,200/1,333/1,500/1,800 | — | — | 93.3(1,200s) / **95.0(1,333s)** / 96.6(1,500s) / 98.3(1,800s) |
 
     굵게 표시한 지점(SMALL 200s, MEDIUM 500s, MEGA 1,333s)이 각 티어의 설계된 도착 elapsed이며, 목표(25%/60%/95%)와 정확히 일치. 세 티어 모두 스윕 전 구간 매진 0% — 개별 zone 무작위 편차로 매진에 가깝거나 매진일 수 있다는 D-21의 원래 해석은 그대로 유지(전체 풀 기준 소진율이 더 높아진 만큼 이번엔 그 확률도 더 높아짐)
-  - **실측 검증 (timewarp 없이 실제 wall-clock, `scripts/_d23-queue-realtime-probe-tmp.ts` — D-22와 동일하게 실제 production 함수(`lib/queue.ts`의 `joinQueue`/`pollQueue`)를 직접 호출)**: MEGA로 정각(`queueOpenAt` = 클릭 시각)에 `joinQueue` 호출 → 초기 순번 40,000(=surgeBaseline) 확인. 이후 실제 90초간 15초 간격으로 6회 `pollQueue`를 실제 시간 경과로 호출 — 매 지점에서 `실제 순번 = 초기 순번 − admissionRatePerSec × 실제 경과초`와 소수점까지 정확히 일치(drift 0.000, 전 지점 OK). 전체 소요 시간은 25분을 실제로 기다리는 대신 D-7 timewarp와 동일한 메커니즘(순수 함수에 미래 `now`를 직접 주입)으로 검증 — designed wait(1,333.33s) 5초 전엔 `WAITING`(순번 150.01), designed wait 시점엔 부동소수점 나눗셈 잔차로 순번 0.01이 남아 아직 `WAITING`, +1초 후(1,334.33s)엔 순번 0.00·`ADMITTED` 확인 — 설계한 22.2분 대기가 실제 tick 계산과 정확히 일치함을 확인
+  - **실측 검증 (timewarp 없이 실제 wall-clock, `scripts/_d23-queue-realtime-probe-tmp.ts` — D-22와 동일하게 실제 production 함수(`lib/queue.ts`의 `joinQueue`/`pollQueue`)를 직접 호출)**: MEGA로 정각(`queueOpenAt` = 클릭 시각)에 `joinQueue` 호출 → 초기 순번 40,000(=surgeBaseline) 확인. 이후 실제 90초간 15초 간격으로 6회 `pollQueue`를 실제 시간 경과로 호출 — 매 지점에서 `실제 순번 = 초기 순번 − admissionRatePerSec × 실제 경과초`와 소수점까지 정확히 일치(drift 0.000, 전 지점 OK). 전체 소요 시간은 25분을 실제로 기다리는 대신 D-7 timewarp와 동일한 메커니즘(순수 함수에 미래 `now`를 직접 주입)으로 검증 — designed wait(1,333.33s) 5초 전엔 `WAITING`(순번 150.01), designed wait 시점엔 부동소수점 나눗셈 잔차로 순번 0.01이 남아 아직 `WAITING`, +1초 후(1,334.33s)엔 순번 0.00·`ADMITTED` 확인 — 설계한 22.2분 대기가 실제 tick 계산과 정확히 일치함을 확인 (이 검증은 1차 개정의 flat `surgeBaseline=40,000` 모델 기준이었음 — 2차 개정 이후의 서지 구간 검증은 아래 "D-23 2차 개정"의 브라우저 검증 항목 참고)
   - **`lib/result.ts`의 `TIER_BENCHMARKS.targetTotalMs` 재조정 (사용자 확인 후 이번 범위에 포함)**: `totalDurationMs`가 합산하는 `stageTimings`에는 `queue` 단계(`joinQueue` → `redeemAdmissionToken`, 곧 이번에 늘어난 대기 시간 그 자체)가 포함되는데, 기존 `targetTotalMs`(SMALL 90s/MEDIUM 150s/MEGA 240s)는 "정각 클릭 시 대기열 통과가 거의 즉시"라는 D-4/D-21 시절의 전제를 깔고 있었음 — 그대로 두면 이번 변경 후 거의 모든 세션이 `slow_total_time` 피드백을 받게 되는 회귀가 확인돼, 사용자에게 확인 후 이번 범위에 포함하기로 함(그 외 `maxContentionLosses` 등 다른 벤치마크는 D-21 때처럼 손대지 않음 — 사용자가 명시적으로 한정). 새 `targetTotalMs` = 기존값(대기열 이외 단계의 기존 예산으로 간주) + 이번에 새로 정한 대기열 통과 시간 → SMALL 90s+200s=290s, MEDIUM 150s+500s=650s, MEGA 240s+1,333s≈1,573s
   - **다루지 않은 것**: `lib/result.ts`의 `maxContentionLosses`(사용자가 명시적으로 이번 범위에서 제외) — D-21/D-22 시점의 실측이 여전히 유효하다고 간주. `scripts/_d23-queue-realtime-probe-tmp.ts` — 검증용 임시 스크립트, D-22의 `_concurrency-probe-tmp.ts`/`_contention-losses-probe-tmp.ts`와 동일하게 사용자가 직접 정리 예정
   - **영향 범위**: `prisma/schema.prisma`+마이그레이션(`SimulationConfig.surgeBaseline` 추가), `lib/queue.ts`(`joinQueue`의 초기 순번 공식), `prisma/seed.ts`(세 티어 `surgeBaseline`/`admissionRatePerSec`/`arrivalRatePerSec`/`botCurveK` 갱신 — 이 과정에서 `simulationConfig.createMany`가 재시딩 시 `tier` 유니크 제약으로 실패하는 기존 버그를 발견해 티어별 `upsert`로 전환, 부수 수정), `lib/result.ts`(`TIER_BENCHMARKS.targetTotalMs`), `scripts/tune-bot-intensity.ts`(기본 `elapsedSeconds` 스윕을 0~1,800s로 확장), `lib/queue.test.ts`/`app/api/queue/route.test.ts`/`app/api/dev/timewarp/route.test.ts`(새 공식/설정값에 맞춰 기대값 갱신), `lib/tick.test.ts`(`caps the bot claim at availableSeatCount` 테스트가 하드코딩된 `+1h`를 쓰고 있어 새 MEGA `botCurveK`에서 더 이상 포화되지 않는 문제 발견 — 파일 내 다른 테스트들과 동일한 `SATURATING_ELAPSED_MS` 상수로 통일) — `lib/simulation.ts`(D-4 구현 시 정정과 동일한 이유로 변경 불필요)·`claimSeatsBatch`/D-20/D-22의 락 패턴·zone 밴딩(D-17)·좌석 라벨(D-19) 전부 변경 없음. 전체 테스트(219개) + lint + `tsc --noEmit` 통과
   - See: 사용자 요청 (오늘 날짜)
+  - **D-23 2차 개정 — surgeBaseline 재설계(서지 구간 도입) + 리서치 기반 배율 적용** (사용자 요청, 1차 개정의 두 가지 문제 지적: (1) `surgeBaseline`이 고정 상수라 정각 클릭 반응속도(0.1초 vs 0.9초)가 순번에 거의 영향을 못 줘 F002/F003의 "얼마나 빨리 눌렀는지가 유의미해야 한다"는 핵심 훈련 의도를 죽임, (2) `40,000`이라는 값 자체가 근거 없이 부풀려진 추정치였음):
+    - **리서치 재검증 (여러 차례 검색)**: 지디 콘서트(고척스카이돔, 수용 16,784~최대 25,000명, MEGA 15,000석과 거의 동일 체급) — 정각 클릭했지만 "느린 편"이라 자책한 사용자가 순번 25,000번대 → **좌석 대비 약 1~1.5배**. 임영웅 잠실주경기장(6~7만석, MEGA보다 훨씬 큰 스타디움급) — 대기열 최고 44~45만 명 → 좌석 대비 약 6~7배(국민급 스타의 최상위 피크 수요, 참고용 상한 감각으로만 사용 — MEGA에 그대로 적용하지 않음). SMALL/MEDIUM 규모(2,500~7,000석)의 "평범한 인기 콘서트" 순번 실측 후기는 여러 차례 검색에도 발견하지 못함(화제성 있는 극단적 사례만 후기·기사화되는 경향으로 추정) — **이 규모의 배율은 실측 데이터 부재를 인정**하고, MEGA와 동일 배율을 채택해 일관성을 유지하기로 판단(대신 티어 간 체감 난이도 차이는 `admissionRatePerSec`/`botCurveK` 쪽에서 만듦 — 이미 D-23 1차 개정에서 그렇게 설계돼 있었음)
+    - **결정: `surgeBaseline`을 "고정 상수"에서 "서지 구간(오픈 후 정확히 1초) 안에서 계산되는 상한"으로 재설계**. 서지 구간을 3초가 아닌 1초로 정한 이유: 실제 "예매하기" 버튼 클릭의 반응속도는 보통 1초 이내이고, 구간이 길수록 그 안에서의 반응속도 차이가 결과 순번에 흐릿하게 반영되므로(0.1초 vs 0.9초 차이가 3초 구간에서는 상대적으로 작아짐), 반응속도 훈련 효과를 극대화하려면 구간을 최대한 짧게 잡아야 함
+    - **최종 수식** (`lib/simulation.ts`의 `computeInitialQueuePosition`, `SURGE_WINDOW_SECONDS = 1`):
+      ```
+      t = elapsedSinceOpen(초)
+      position = t <= 1
+        ? surgeBaseline × (t / 1)                          // 서지 구간: 0→surgeBaseline 선형 램프
+        : surgeBaseline + arrivalRatePerSec × (t - 1)       // 서지 구간 이후: 기존처럼 완만하게 증가
+      ```
+      경계(t=1)에서 두 구간이 정확히 `surgeBaseline`으로 연속(불연속 없음). 서지 구간 안에서는 반응 시간이 순번에 정비례로 직결 — 0.1초 클릭은 `surgeBaseline`의 10%, 0.9초 클릭은 90%
+    - **`surgeBaseline` 재산정** (좌석 수 × 5/3 — MEGA를 지디 실측치 25,000에 정확히 맞추는 배율을 구하면 25,000/15,000 = 5/3이 나오고, 이 배율을 세 티어에 동일 적용. 결과가 요청 범위(SMALL 3,750~5,000 / MEDIUM 10,500~14,000 / MEGA 22,500~30,000) 안에 모두 들어옴):
+
+      | Tier | 좌석 수 | surgeBaseline (좌석수×5/3) |
+      |---|---|---|
+      | SMALL | 2,500 | 4,167 |
+      | MEDIUM | 7,000 | 11,667 |
+      | MEGA | 15,000 | 25,000 (지디 실측치와 정확히 일치) |
+
+    - **`admissionRatePerSec` 재조정 (대기 시간 목표 유지)**: 대기 시간 = `surgeBaseline / admissionRatePerSec` 관계는 그대로이므로, 1차 개정에서 이미 확정한 대기 시간 목표(SMALL 200s/MEDIUM 500s/MEGA ~1,333s)를 그대로 유지하도록 `admissionRatePerSec = 새 surgeBaseline / 목표 대기 시간`으로 역산. `arrivalRatePerSec`도 기존 관례(D-4의 "깔끔한 숫자를 위한 미러링")대로 동일값 유지
+
+      | Tier | surgeBaseline | admissionRatePerSec = arrivalRatePerSec | 대기 시간 |
+      |---|---|---|---|
+      | SMALL | 4,167 | 20.84 | 4167/20.84 ≈ 199.95s (~3m20s, 변화 없음) |
+      | MEDIUM | 11,667 | 23.33 | 11667/23.33 ≈ 500.09s (~8m20s, 변화 없음) |
+      | MEGA | 25,000 | 18.75 | 25000/18.75 = 1,333.33s (정확히 동일, 변화 없음) |
+
+    - **`botCurveK`/`targetTotalMs` 영향 확인 (요청 항목 3, 4)**: 세 티어 모두 대기 시간이 (반올림 오차 0.1초 이내로) 그대로 유지돼, 좌석 화면 도달 elapsed(200s/500s/1,333.33s)도 그대로 — 1차 개정에서 이 elapsed 기준으로 역산한 `botCurveK`(0.00144/0.00183/0.00225)와 `lib/result.ts`의 `targetTotalMs`(290,000/650,000/1,573,000ms)는 **재계산 불필요, 변경 없음**. `scripts/tune-bot-intensity.ts`로 재실측해 동일 elapsed 지점에서 소진율이 여전히 정확히 25.0%/59.9%/95.0%임을 확인(결정론적, stddev 0.000) — 가설대로 영향 없음이 실측으로 확인됨
+    - **스키마 변경 없음**: `SimulationConfig.surgeBaseline` 필드는 1차 개정에서 이미 추가돼 있어 값·해석 방식만 바뀜 — 마이그레이션 불필요, `prisma/seed.ts` 값 갱신 후 재시딩만 수행
+    - **브라우저 검증 (Playwright, 실제 dev 서버, `POST /api/dev/timewarp`의 `openInMs`로 서지 구간 안팎의 도착 시각을 정밀 재현 — 실제 클릭 타이밍을 흉내내되 네트워크/서버 왕복 오버헤드까지 포함된 실측치)**:
+      - **서지 구간 안 반응속도 민감도**: MEGA에서 `openInMs=-100/-500/-900`(각각 목표 0.1s/0.5s/0.9s 지연) 적용 후 즉시 join한 실측 순번 — 5,525(체감 elapsed≈0.22s) / 12,875(≈0.52s) / 22,850(≈0.91s). 가장 빠른 값과 가장 느린 값의 차이 17,325 — "수천 단위 이상" 목표를 크게 상회. SMALL(542 vs 3,792, 차이 3,250)·MEDIUM(1,283 vs 10,594, 차이 9,311)도 동일하게 확인 — **세 티어 모두 "빨리 누르면 확실히 유리하다"는 체감이 실측으로 확인됨**
+      - **서지 구간을 넘긴 경우의 완만한 증가**: MEGA에서 `openInMs=-3000/-5000`(3초/5초 지연) → 순번 25,038 / 25,075 — `lib/simulation.test.ts`의 예측값과 정확히 일치, 서지 구간 안(수천 단위 차이)과 비교해 압도적으로 완만함(2초 사이 37 증가)
+    - **회귀 테스트**: `lib/simulation.test.ts`에 `computeInitialQueuePosition` 신규 스위트(경계 t=0/t=1 연속성, 서지 구간 내 비례 램프, 서지 구간 밖 완만한 증가, 결정론) 추가. `lib/queue.test.ts`의 D-4/D-23 관련 케이스 전면 재작성(서지 구간 시작점=0, 서지 구간 종료점=surgeBaseline, 서지 구간 안 반응속도 차이 케이스 신규 추가, 서지 구간 밖 케이스는 새 수치로 갱신). `app/api/queue/route.test.ts`의 실측 허용 오차 범위를 새 수치·새 admissionRatePerSec 배율에 맞춰 조정. 전체 테스트(227개, 신규 8개 포함) + lint + `tsc --noEmit` 통과
+    - **영향 범위**: `lib/simulation.ts`(`computeInitialQueuePosition`/`SURGE_WINDOW_SECONDS` 신규), `lib/queue.ts`(`joinQueue`가 새 함수 사용), `prisma/seed.ts`(세 티어 `surgeBaseline`/`admissionRatePerSec`/`arrivalRatePerSec` 갱신 — `botCurveK`/`errorRate`/`latencyMs`/좌석 스케일 변경 없음), `lib/simulation.test.ts`/`lib/queue.test.ts`/`app/api/queue/route.test.ts` — `lib/result.ts`(`targetTotalMs`)·`scripts/tune-bot-intensity.ts`·스키마·마이그레이션 전부 변경 없음(확인 완료, 위 참고)
+    - See: 사용자 요청 (오늘 날짜)
 - [x] **D-24 (후보, 미착수). D-23 브라우저 검증 중 zone간 소진율이 지나치게 균일하다는 관찰 — 무대 근접도 기반 공간적 가중치 도입 여지** (D-23 실측 검증 중 발견 — 사용자 요청으로 이번엔 착수하지 않고 후보로만 기록): MEGA 기준 elapsed ~22분 지점에서 여러 zone(1, 5, 10, 13, 20, 25)의 소진율을 실측하니 94~96%로 거의 균일했음 — `claimSeatsBatch`(D-20)가 zone 구분 없이 전체 풀(15,000석)에서 `ORDER BY random()`으로 균등 무작위 클레임하는 기존 설계(D-21에서 이미 명시적으로 채택) 때문에, 600석 표본 크기에서 zone간 편차가 크게 벌어지지 않음 — "인기 zone은 꽉 차고 다른 zone은 널널함" 대신 "거의 모든 zone이 고르게 빡빡함"에 가까운 체감. 기능 자체(여러 zone을 옮겨 다니며 빈자리 찾기)는 정상 동작하므로 버그는 아니며, D-23의 명시적 요청 범위(초기 순번·대기 시간·전체 소진율 곡선)를 벗어난 관찰이라 이번엔 손대지 않음
   - **후보 방향**: 무대 근접 zone(낮은 zone 번호, D-17의 band 기준 무대에 가까운 열)이 먼 zone보다 먼저·더 빠르게 소진되도록 `claimSeatsBatch`에 zone 기반 가중치(예: band별 확률 가중 또는 순차적 소진 우선순위)를 도입하는 방향 — 실제 티케팅도 앞자리부터 매진되는 경향이 있어 리서치 근거로 뒷받침 가능
   - **착수 조건**: 사용자가 별도로 요청할 때 Task로 승격, 실측(zone별 소진율 분산)부터 재확인 후 설계
