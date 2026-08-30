@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Tier, SimulationRunStatus } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
@@ -178,8 +179,14 @@ describe("POST /api/dev/timewarp", () => {
     const polled = await pollQueue({ sessionId, runId: run.id, now: new Date() });
     expect(polled.ok).toBe(true);
     if (polled.ok) {
-      // 90% of 500 consumed -> ~50 remaining.
-      expect(polled.snapshot.position).toBeGreaterThan(45);
+      // 90% of 500 consumed -> ~50 remaining. Real elapsed time passes
+      // between this route's internal rewind computation and this test's
+      // own `pollQueue` call above, decaying it slightly further
+      // (admissionRatePerSec 20.84/sec for SMALL). Lower bound carries
+      // extra margin (measured ~6-unit overshoot against a remote DB,
+      // ~2.5x'd) for a remote (Neon) DB connection's added round-trip
+      // latency between the two calls.
+      expect(polled.snapshot.position).toBeGreaterThan(30);
       expect(polled.snapshot.position).toBeLessThanOrEqual(50);
     }
   });

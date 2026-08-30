@@ -1,4 +1,5 @@
-import { describe, it, expect, afterEach } from "vitest";
+// @vitest-environment node
+import { describe, it, expect, afterEach, vi } from "vitest";
 import { prisma } from "@/lib/db";
 import type { Prisma } from "@/lib/generated/prisma/client";
 import { Tier, SeatStatus } from "@/lib/types";
@@ -7,6 +8,12 @@ import { advanceTick } from "@/lib/tick";
 
 const db = getTestDb();
 const createdRunIds: string[] = [];
+
+// Several tests below bulk-insert a tier's full real seat pool (up to
+// 2,500 rows) then run advanceTick's locked transaction — against a
+// remote (Neon) DB, that's too slow for the default 5000ms testTimeout.
+// Scoped to this file only, not vitest.config.ts's global default.
+vi.setConfig({ testTimeout: 10000 });
 
 afterEach(async () => {
   if (createdRunIds.length === 0) return;

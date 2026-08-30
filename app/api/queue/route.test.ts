@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Tier, SimulationRunStatus } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
@@ -96,12 +97,15 @@ describe("POST /api/queue", () => {
     const res = await POST();
     expect(res.status).toBe(200);
     const json = await res.json();
-    // ~6,230 (see createActiveRun's comment); tolerate a few ms of
-    // real-clock drift between the fixture's openAt and the route's own
-    // `new Date()` — at this tier's 20.84/sec rate, drift matters more
-    // than it did pre-2nd-revision, so the tolerance window is wider.
+    // ~6,230 (see createActiveRun's comment); tolerate real-clock drift
+    // between the fixture's openAt and the route's own `new Date()` — at
+    // this tier's 20.84/sec rate, drift matters more than it did
+    // pre-2nd-revision. Upper bound carries extra margin (measured ~4-unit
+    // overshoot against a remote DB, ~2.5x'd) for a remote (Neon) DB
+    // connection's added round-trip latency, on top of the local-clock
+    // drift the original window already covered.
     expect(json.position).toBeGreaterThanOrEqual(6229);
-    expect(json.position).toBeLessThanOrEqual(6234);
+    expect(json.position).toBeLessThanOrEqual(6244);
     expect(json.status).toBe("WAITING");
   });
 
@@ -160,11 +164,15 @@ describe("GET /api/queue", () => {
     const json = await res.json();
     // Starting position is ~6,230 (D-23 2nd revision: surgeBaseline 4,167 +
     // arrivalRatePerSec 20.84/sec * ~99s since open, past the 1s surge
-    // window). A few ms of real elapsed time pass between the POST and GET
-    // calls above, decaying it slightly further (admissionRatePerSec
-    // 20.84/sec) — tolerate both that decay and the join-time rounding drift.
+    // window). Real elapsed time passes between the POST and GET calls
+    // above, decaying it slightly further (admissionRatePerSec 20.84/sec)
+    // — tolerate that decay plus the join-time rounding drift. Lower bound
+    // carries extra margin (measured ~5.8-unit overshoot against a remote
+    // DB, ~2.5x'd) for a remote (Neon) DB connection's added round-trip
+    // latency between the two calls, on top of the local-clock drift the
+    // original window already covered.
     expect(json.position).toBeLessThanOrEqual(6234);
-    expect(json.position).toBeGreaterThan(6220);
+    expect(json.position).toBeGreaterThan(6205);
     expect(json.status).toBe("WAITING");
   });
 });

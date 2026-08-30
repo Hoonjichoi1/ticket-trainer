@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { NextRequest } from "next/server";
 import { SimulationRunStatus, SessionOutcome, Tier } from "@/lib/types";
@@ -21,6 +22,12 @@ const { POST } = await import("./route");
 const db = getTestDb();
 const createdRunIds: string[] = [];
 const createdSessionIds: string[] = [];
+
+// MEDIUM/MEGA seat-map generation is a large bulk insert against a real DB
+// (D-15 target scale: 7,000 / 15,000 rows) — the default 5000ms testTimeout
+// is too tight for that against a remote (Neon) connection. Scoped to this
+// file only, not vitest.config.ts's global default.
+vi.setConfig({ testTimeout: 10000 });
 
 function postSession(body: unknown) {
   return POST(
@@ -98,16 +105,24 @@ describe("POST /api/session", () => {
     expect(store.size).toBe(1);
   });
 
-  it("generates each tier's own configured seat count (D-15 target scale)", async () => {
-    for (const tier of [Tier.MEDIUM, Tier.MEGA]) {
-      const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier } });
-      const res = await postSession({ tier });
-      const json = await res.json();
-      createdRunIds.push(json.runId);
+  it("generates MEDIUM's configured seat count (D-15 target scale)", async () => {
+    const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier: Tier.MEDIUM } });
+    const res = await postSession({ tier: Tier.MEDIUM });
+    const json = await res.json();
+    createdRunIds.push(json.runId);
 
-      const seatCount = await db.seat.count({ where: { simulationRunId: json.runId } });
-      expect(seatCount).toBe(config.seatRows * config.seatsPerRow);
-    }
+    const seatCount = await db.seat.count({ where: { simulationRunId: json.runId } });
+    expect(seatCount).toBe(config.seatRows * config.seatsPerRow);
+  });
+
+  it("generates MEGA's configured seat count (D-15 target scale)", async () => {
+    const config = await db.simulationConfig.findUniqueOrThrow({ where: { tier: Tier.MEGA } });
+    const res = await postSession({ tier: Tier.MEGA });
+    const json = await res.json();
+    createdRunIds.push(json.runId);
+
+    const seatCount = await db.seat.count({ where: { simulationRunId: json.runId } });
+    expect(seatCount).toBe(config.seatRows * config.seatsPerRow);
   });
 
   it("records the requested tier on the created SimulationRun", async () => {

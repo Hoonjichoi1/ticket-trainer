@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
 import { Tier, SimulationRunStatus, SeatStatus, type JudgmentEvent } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";

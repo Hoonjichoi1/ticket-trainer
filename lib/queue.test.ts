@@ -1,3 +1,4 @@
+// @vitest-environment node
 import { describe, it, expect, afterEach } from "vitest";
 import { Tier, QueueEntryStatus } from "@/lib/types";
 import { getTestDb } from "@/lib/test-db";
