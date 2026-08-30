@@ -87,23 +87,49 @@ export function resolveQueueOpenAt(openAt: Date, now: Date): Date {
 }
 
 // ---------------------------------------------------------------------
-// Bot claim count (F008) — D-21: front-loaded exponential-approach curve
+// Bot claim count (F008) — D-21: front-loaded exponential-approach curve;
+// D-25: input switched from raw elapsed to cumulative arrivals
 // ---------------------------------------------------------------------
 export interface BotClaimInput {
   /**
-   * computeElapsedTime({ since: SimulationRun.queueOpenAt, now }) — total
-   * elapsed since the sale was considered open for this run, NOT since the
-   * last tick. D-21's curve needs a single fixed anchor: it computes an
-   * ABSOLUTE cumulative depletion target for elapsed t, not a per-tick
-   * increment, so the same t must always mean the same point on the curve
-   * regardless of how many ticks have fired or how they were spaced. A
-   * "since last tick" delta (the pre-D-21 model) can't give that — the same
-   * delta could land at very different points on a nonlinear curve
-   * depending on tick history, breaking F007 determinism in practice.
+   * Cumulative number of virtual queue entrants who have reached the seat
+   * screen (been admitted out of the queue) since SimulationRun.queueOpenAt,
+   * by this tick's `now` — computed by the caller as
+   * `SimulationConfig.admissionRatePerSec * elapsedSinceOpen.seconds`
+   * (the queue's own admission-drain model, see lib/queue.ts's
+   * computeQueuePosition). This app models its virtual crowd through
+   * aggregate per-tier rates rather than individual QueueEntry rows (a run
+   * has exactly one real QueueEntry — the player), so this rate-derived
+   * count is the crowd-level analog of "how many people have reached the
+   * seat screen so far," same modeling approach computeInitialQueuePosition
+   * already uses for queue *inflow* via arrivalRatePerSec.
+   *
+   * D-21's fixed-anchor requirement still applies unchanged: this must be
+   * an ABSOLUTE cumulative count since queueOpenAt, not a per-tick delta,
+   * so the same value always means the same point on the curve regardless
+   * of tick history (see arrivalScaleFactor for how it's turned into a
+   * curve position, and ROADMAP D-25 for F007's redefinition in terms of
+   * this value instead of raw elapsed).
    */
-  elapsedSinceOpen: ElapsedTime;
-  /** SimulationConfig.botCurveK for this run's tier — exponential curve steepness (1/sec); higher = faster early depletion */
+  cumulativeArrivals: number;
+  /** SimulationConfig.botCurveK for this run's tier — exponential curve steepness (1 / arrival-unit, scaled via arrivalScaleFactor below); higher = faster early depletion */
   botCurveK: number;
+  /**
+   * The tier's DESIGNED/baseline admission throughput (seats/sec) —
+   * `cumulativeArrivals / arrivalScaleFactor` rescales cumulativeArrivals
+   * back onto the same seconds-like scale botCurveK was originally tuned
+   * against (see ROADMAP D-21/D-23's measured tables, all tuned in terms
+   * of elapsed seconds). When the caller derives cumulativeArrivals from
+   * this tier's own current admissionRatePerSec, the ratio equals
+   * elapsedSinceOpen exactly, reproducing D-21's original curve bit-for-bit
+   * (D-25's "normal speed" case). If the queue's actual admission
+   * throughput ever diverges from this baseline — e.g. the crowd arriving
+   * faster or slower than the pace botCurveK was calibrated against — the
+   * ratio diverges from elapsed too, and the curve speeds up or slows down
+   * accordingly. Treated as 0 (no depletion) if <= 0, to avoid a
+   * divide-by-zero.
+   */
+  arrivalScaleFactor: number;
   /** total seats in this run's pool (SimulationConfig.seatRows * seatsPerRow) */
   poolSize: number;
   /** count of currently-AVAILABLE seats — used both to cap this tick's claim and (via poolSize - availableSeatCount) to know how much of the target is already met */
@@ -122,20 +148,23 @@ export interface BotClaimResult {
  * instantly) — the previous linear model (claimCount = botIntensity *
  * elapsed) had it backwards: loose early, steepening only as elapsed grew.
  *
- * targetClaimed(t) = floor(poolSize * (1 - e^(-botCurveK * t))) is the
- * ABSOLUTE cumulative depletion target at elapsed t seconds since
- * queueOpenAt (see BotClaimInput.elapsedSinceOpen for why an absolute
- * anchor, not a per-tick delta, is required for determinism here).
- * claimCount this tick is just the gap between that target and what's
- * already gone (poolSize - availableSeatCount) — zero or negative gaps
- * (already at/above target, e.g. from the run's one real user claiming
- * ahead of the curve) claim nothing.
+ * D-25: real gameplay showed depletion tracking wall-clock time alone felt
+ * wrong while the queue kept admitting people — depletion should track how
+ * many people have actually flowed through, not just seconds. So the
+ * curve's input is now `t = cumulativeArrivals / arrivalScaleFactor`
+ * instead of raw elapsed seconds; targetClaimed(t) = floor(poolSize * (1 -
+ * e^(-botCurveK * t))) is still the ABSOLUTE cumulative depletion target
+ * (see BotClaimInput.cumulativeArrivals for why an absolute anchor, not a
+ * per-tick delta, is required for determinism here). claimCount this tick
+ * is just the gap between that target and what's already gone (poolSize -
+ * availableSeatCount) — zero or negative gaps (already at/above target,
+ * e.g. from the run's one real user claiming ahead of the curve) claim
+ * nothing.
  */
 export function computeBotClaimCount(input: BotClaimInput): BotClaimResult {
   const alreadyClaimed = Math.max(0, input.poolSize - input.availableSeatCount);
-  const targetClaimed = Math.floor(
-    input.poolSize * (1 - Math.exp(-input.botCurveK * input.elapsedSinceOpen.seconds)),
-  );
+  const t = input.arrivalScaleFactor > 0 ? input.cumulativeArrivals / input.arrivalScaleFactor : 0;
+  const targetClaimed = Math.floor(input.poolSize * (1 - Math.exp(-input.botCurveK * t)));
   const rawCount = targetClaimed - alreadyClaimed;
   const claimCount = Math.min(Math.max(0, rawCount), input.availableSeatCount);
   return { claimCount };

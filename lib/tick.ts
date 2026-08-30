@@ -4,6 +4,23 @@ import type { Prisma } from "@/lib/generated/prisma/client";
 import { SeatStatus, Tier } from "@/lib/types";
 import { computeBotClaimCount, computeElapsedTime, type BotClaimResult } from "@/lib/simulation";
 
+// D-25: the per-tier admission throughput (seats/sec) each tier's
+// botCurveK was tuned against (see prisma/seed.ts's admissionRatePerSec at
+// D-23 tuning time). Deliberately a frozen snapshot, NOT re-read from the
+// live SimulationConfig row below — cumulativeArrivals is derived from the
+// LIVE config.admissionRatePerSec, so keeping this baseline separate is
+// what lets the two diverge if a tier's actual admission pace is ever
+// retuned in SimulationConfig without also retuning botCurveK to match
+// (see lib/simulation.ts's BotClaimInput.arrivalScaleFactor) — that
+// divergence, and the resulting faster/slower depletion, is the point, not
+// a bug. If botCurveK is ever retuned, re-derive this alongside it from
+// whatever admissionRatePerSec the new botCurveK was tuned against.
+const DESIGNED_ADMISSION_RATE_PER_SEC: Record<Tier, number> = {
+  [Tier.SMALL]: 20.84,
+  [Tier.MEDIUM]: 23.33,
+  [Tier.MEGA]: 18.75,
+};
+
 export interface AdvanceTickParams {
   runId: string;
   /** caller-supplied "current" time — never Date.now() internally, mirrors lib/simulation.ts's purity contract */
@@ -27,7 +44,7 @@ export interface AdvanceTickResult {
 
 /**
  * Reads SimulationRun.queueOpenAt (D-21's fixed curve anchor — see
- * lib/simulation.ts's BotClaimInput.elapsedSinceOpen for why this must be
+ * lib/simulation.ts's BotClaimInput.cumulativeArrivals for why this must be
  * a fixed reference rather than a per-tick delta) and this run's
  * seatRows/seatsPerRow (D-15, to get poolSize), then computes how many
  * seats the bot should claim this tick.
@@ -81,8 +98,15 @@ export async function advanceTick(params: AdvanceTickParams): Promise<AdvanceTic
   });
 
   const elapsedSinceOpen = computeElapsedTime({ since: run.queueOpenAt, now });
+  // D-25: cumulative virtual admissions since queueOpenAt, using this
+  // tier's LIVE admissionRatePerSec (see lib/queue.ts's computeQueuePosition
+  // for the same admission-drain model) — deliberately not the frozen
+  // DESIGNED_ADMISSION_RATE_PER_SEC baseline passed as arrivalScaleFactor
+  // below, so the two can diverge (see that constant's doc comment).
+  const cumulativeArrivals = config.admissionRatePerSec * elapsedSinceOpen.seconds;
   const botClaim = computeBotClaimCount({
-    elapsedSinceOpen,
+    cumulativeArrivals,
+    arrivalScaleFactor: DESIGNED_ADMISSION_RATE_PER_SEC[run.tier],
     botCurveK: config.botCurveK,
     poolSize,
     availableSeatCount,

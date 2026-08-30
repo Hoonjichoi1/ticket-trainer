@@ -266,9 +266,9 @@ export interface ClaimSeatsBatchResult {
  * Only the seat *selection* is randomized here (ORDER BY random(), same as
  * the old shuffledCopy) — F007's determinism requirement is about
  * `computeBotClaimCount`/advanceTick's claimCount for a given
- * (elapsedSinceOpen, botCurveK, poolSize), which this function doesn't
- * touch; which specific seats end up claimed was never part of that
- * contract.
+ * (cumulativeArrivals, arrivalScaleFactor, botCurveK, poolSize) (D-25),
+ * which this function doesn't touch; which specific seats end up claimed
+ * was never part of that contract.
  *
  * `LIMIT count` combined with the AVAILABLE filter means this naturally
  * caps at however many seats actually exist when the query runs (same
